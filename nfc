@@ -1,5 +1,5 @@
 -- ============================================================
--- Nightfall Chronicles ESP - Matcha version
+-- ^.^ megs ESP - Matcha version
 -- Per-player lines: Username, Species, Spell, Visible, Surname, Health, Distance
 -- Visible: green "Visible : Yes" / red "Visible : No" (based on Invisique)
 -- ============================================================
@@ -21,7 +21,7 @@ local flags = {
     health       = true,
     distance     = true,
     spellESP     = true,
-    visESP       = true,   -- per-player Visible line
+    visESP       = true,
 
     maxDist      = 2000,
     nameColor    = Color3.fromRGB(255, 255, 255),
@@ -37,7 +37,7 @@ local flags = {
 local espObjects = {}
 local selectedPlayer = nil
 
-local CONFIG_FILE = "nightfall_config.json"
+local CONFIG_FILE = "megs_config.json"
 
 local function colorToStr(c)
     return string.format("%d,%d,%d",
@@ -124,7 +124,7 @@ local function createESP(player)
         name      = newText(14),
         species   = newText(13),
         spell     = newText(13),
-        visible   = newText(13),   -- per-player Visible line
+        visible   = newText(13),
         character = newText(13),
         health    = newText(13),
         dist      = newText(12),
@@ -315,7 +315,6 @@ local function renderLoop()
                 local lineOffset = 0
                 local textAnchorY = topY - 18
 
-                -- Username
                 if obj.name then
                     if flags.name then
                         obj.name.Color = flags.nameColor
@@ -328,7 +327,6 @@ local function renderLoop()
                     end
                 end
 
-                -- Species
                 if obj.species then
                     if flags.species then
                         local sp = getSpecies(char)
@@ -346,7 +344,6 @@ local function renderLoop()
                     end
                 end
 
-                -- Casting spell (only when active)
                 if obj.spell then
                     if flags.spellESP then
                         local activeSpell = getWatchedSpell(player)
@@ -364,7 +361,6 @@ local function renderLoop()
                     end
                 end
 
-                -- Per-player Visible line (green/red based on Invisique)
                 if obj.visible then
                     if flags.visESP then
                         local visible = isPlayerVisible(player)
@@ -383,7 +379,6 @@ local function renderLoop()
                     end
                 end
 
-                -- Surname
                 if obj.character then
                     if flags.character then
                         local cName = getCharacterSurname(char)
@@ -401,7 +396,6 @@ local function renderLoop()
                     end
                 end
 
-                -- Health
                 if obj.health then
                     if flags.health then
                         local hp = math.floor(humanoid.Health)
@@ -416,7 +410,6 @@ local function renderLoop()
                     end
                 end
 
-                -- Distance
                 if obj.dist then
                     if flags.distance then
                         obj.dist.Color = flags.distColor
@@ -452,8 +445,7 @@ end
 -- ============================================================
 -- UI
 -- ============================================================
-UI.AddTab("Nightfall", function(tab)
-    -- ===== ESP =====
+UI.AddTab("^.^ megs", function(tab)
     local esp = tab:Section("ESP", "Left")
 
     esp:Toggle("nf_enabled", "Enable ESP", false, function(on) flags.enabled = on; scheduleSave() end)
@@ -470,7 +462,6 @@ UI.AddTab("Nightfall", function(tab)
     esp:Tip("Per-player: shows Visible : Yes (green) or Visible : No (red)")
     esp:SliderInt("nf_maxdist", "Max Distance", 100, 10000, flags.maxDist, function(v) flags.maxDist = v; scheduleSave() end)
 
-    -- ===== Actions =====
     local actions = tab:Section("Actions", "Left")
     actions:Button("Reset Defaults", function()
         flags.name = true
@@ -490,14 +481,13 @@ UI.AddTab("Nightfall", function(tab)
         flags.visYesColor = Color3.fromRGB(80, 255, 80)
         flags.visNoColor = Color3.fromRGB(255, 80, 80)
         scheduleSave()
-        notify("Config reset to defaults", "Nightfall ESP", 3)
+        notify("Config reset to defaults", "^.^ megs", 3)
     end)
     actions:Button("Save Now", function()
         saveConfig()
-        notify("Config saved", "Nightfall ESP", 2)
+        notify("Config saved", "^.^ megs", 2)
     end)
 
-    -- ===== Colors =====
     local colors = tab:Section("Colors", "Right")
 
     colors:Toggle("nf_namecolor_on", "Username Color", true)
@@ -524,7 +514,6 @@ UI.AddTab("Nightfall", function(tab)
     colors:Toggle("nf_visnocolor_on", "Visible No Color", true)
     colors:ColorPicker("nf_visnocolor", flags.visNoColor.R, flags.visNoColor.G, flags.visNoColor.B, 1, function(c) flags.visNoColor = c; scheduleSave() end)
 
-    -- ===== Player Info — Select Player =====
     local info = tab:Section("Select Player", "Left")
 
     local function buildPlayerList()
@@ -563,9 +552,7 @@ UI.AddTab("Nightfall", function(tab)
 
     selectedPlayer = findPlayerByEntry(playerList[1])
 
-    -- ===== Player Info — Details =====
     local details = tab:Section("Details", "Right")
-
     details:InputText("nf_det_user",    "Username",   "—")
     details:InputText("nf_det_species", "Species",    "—")
     details:InputText("nf_det_surname", "Surname",    "—")
@@ -619,22 +606,4 @@ UI.AddTab("Nightfall", function(tab)
                 if humanoid then
                     hpStr = math.floor(humanoid.Health) .. " / " .. math.floor(humanoid.MaxHealth)
                 end
-                pcall(function() UI.SetValue("nf_det_health", hpStr) end)
-
-                if isSoulLinked(selectedPlayer) then
-                    local partner = findSoulPartner(selectedPlayer)
-                    if partner then
-                        local pdn = partner.DisplayName or partner.Name
-                        pcall(function() UI.SetValue("nf_det_soul", pdn .. " (" .. partner.Name .. ")") end)
-                    else
-                        pcall(function() UI.SetValue("nf_det_soul", "Yes") end)
-                    end
-                else
-                    pcall(function() UI.SetValue("nf_det_soul", "") end)
-                end
-            end
-        end
-    end)
-end)
-
-pcall(function() notify("Nightfall ESP loaded", "Nightfall ESP", 3) end)
+                pcall(function
