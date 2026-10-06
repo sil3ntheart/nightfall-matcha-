@@ -144,7 +144,12 @@ pcall(function()
     if Players.PlayerAdded then Players.PlayerAdded:Connect(createESP) end
 end)
 pcall(function()
-    if Players.PlayerRemoving then Players.PlayerRemoving:Connect(removeESP) end
+    if Players.PlayerRemoving then
+        Players.PlayerRemoving:Connect(function(player)
+            removeESP(player)
+            clearESPData(player)
+        end)
+    end
 end)
 
 task.spawn(function()
@@ -288,10 +293,91 @@ end
 -- ============================================================
 -- RENDER LOOP
 -- ============================================================
+-- ============================================================
+-- OPTIMIZED RENDER LOOP
+-- Expensive player-data reads are throttled; screen positioning
+-- still updates every frame for smooth ESP movement.
+-- ============================================================
+
+local ESP_DATA_INTERVAL = 0.20 -- 5 updates/sec for text/data
+local espDataCache = {}
+
+local function setVisible(obj, state)
+    if obj and obj.Visible ~= state then
+        obj.Visible = state
+    end
+end
+
+local function hideESPObject(obj)
+    for _, d in pairs(obj) do
+        if d then setVisible(d, false) end
+    end
+end
+
+local function updateESPData(player, char, humanoid, now)
+    local cache = espDataCache[player]
+    if not cache then
+        cache = {}
+        espDataCache[player] = cache
+    end
+
+    if cache.lastUpdate and (now - cache.lastUpdate) < ESP_DATA_INTERVAL then
+        return cache
+    end
+
+    cache.lastUpdate = now
+
+    -- These GUI searches are now done only 5 times/sec instead of
+    -- once every rendered frame.
+    cache.species = getSpecies(char)
+    cache.surname = getCharacterSurname(char)
+
+    if flags.spellESP then
+        cache.spell = getWatchedSpell(player)
+    else
+        cache.spell = nil
+    end
+
+    if flags.visESP then
+        cache.visible = isPlayerVisible(player)
+    else
+        cache.visible = true
+    end
+
+    if humanoid then
+        cache.hp = math.floor(humanoid.Health)
+        cache.maxHp = math.floor(humanoid.MaxHealth)
+    end
+
+    return cache
+end
+
+local function clearESPData(player)
+    espDataCache[player] = nil
+    spellCache[player] = nil
+    visCache[player] = nil
+end
+
+-- Visual refresh limiter.
+-- The game can render at 180+ FPS, but the ESP does not need to
+-- reposition every Drawing object on every single rendered frame.
+-- 90 Hz keeps it responsive while cutting a large amount of work.
+local ESP_RENDER_INTERVAL = 1 / 90
+local lastESPRender = 0
+
 local function renderLoop()
+    local now = tick()
+
+    if flags.enabled and (now - lastESPRender) < ESP_RENDER_INTERVAL then
+        return
+    end
+
+    if flags.enabled then
+        lastESPRender = now
+    end
     if not flags.enabled then
         for _, obj in pairs(espObjects) do
-            for _, d in pairs(obj) do if d then d.Visible = false end end
+            hideESPObject(obj)
         end
         return
     end
@@ -304,128 +390,130 @@ local function renderLoop()
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         local humanoid = char and char:FindFirstChildOfClass("Humanoid")
 
-        if hrp and humanoid and humanoid.Health > 0 then
-            local worldPos = hrp.Position
-            local screenPos, onScreen = WorldToScreen(worldPos)
-            local dist = (camPos - worldPos).Magnitude
+        if not (hrp and humanoid and humanoid.Health > 0) then
+            hideESPObject(obj)
+            continue
+        end
 
-            if onScreen and dist <= maxDist then
-                local boxHeight = math.clamp(1500 / dist, 20, 250)
-                local topY = screenPos.Y - boxHeight * 0.5
-                local lineOffset = 0
-                local textAnchorY = topY - 18
+        local worldPos = hrp.Position
+        local offset = camPos - worldPos
+        local dist = offset.Magnitude
 
-                if obj.name then
-                    if flags.name then
-                        obj.name.Color = flags.nameColor
-                        obj.name.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
-                        obj.name.Text = player.Name
-                        obj.name.Visible = true
-                        lineOffset = lineOffset + 16
-                    else
-                        obj.name.Visible = false
-                    end
-                end
+        -- Do the cheap distance test before WorldToScreen and all
+        -- expensive text/data work.
+        if dist > maxDist then
+            hideESPObject(obj)
+            continue
+        end
 
-                if obj.species then
-                    if flags.species then
-                        local sp = getSpecies(char)
-                        if sp then
-                            obj.species.Color = flags.speciesColor
-                            obj.species.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
-                            obj.species.Text = sp
-                            obj.species.Visible = true
-                            lineOffset = lineOffset + 15
-                        else
-                            obj.species.Visible = false
-                        end
-                    else
-                        obj.species.Visible = false
-                    end
-                end
+        local screenPos, onScreen = WorldToScreen(worldPos)
 
-                if obj.spell then
-                    if flags.spellESP then
-                        local activeSpell = getWatchedSpell(player)
-                        if activeSpell then
-                            obj.spell.Color = flags.spellColor
-                            obj.spell.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
-                            obj.spell.Text = "Casting : " .. activeSpell
-                            obj.spell.Visible = true
-                            lineOffset = lineOffset + 15
-                        else
-                            obj.spell.Visible = false
-                        end
-                    else
-                        obj.spell.Visible = false
-                    end
-                end
+        if not onScreen then
+            hideESPObject(obj)
+            continue
+        end
 
-                if obj.visible then
-                    if flags.visESP then
-                        local visible = isPlayerVisible(player)
-                        if visible then
-                            obj.visible.Color = flags.visYesColor
-                            obj.visible.Text = "Visible : Yes"
-                        else
-                            obj.visible.Color = flags.visNoColor
-                            obj.visible.Text = "Visible : No"
-                        end
-                        obj.visible.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
-                        obj.visible.Visible = true
-                        lineOffset = lineOffset + 15
-                    else
-                        obj.visible.Visible = false
-                    end
-                end
+        local data = updateESPData(player, char, humanoid, now)
 
-                if obj.character then
-                    if flags.character then
-                        local cName = getCharacterSurname(char)
-                        if cName then
-                            obj.character.Color = flags.charColor
-                            obj.character.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
-                            obj.character.Text = cName
-                            obj.character.Visible = true
-                            lineOffset = lineOffset + 15
-                        else
-                            obj.character.Visible = false
-                        end
-                    else
-                        obj.character.Visible = false
-                    end
-                end
+        local boxHeight = math.clamp(1500 / math.max(dist, 1), 20, 250)
+        local topY = screenPos.Y - boxHeight * 0.5
+        local lineOffset = 0
+        local textAnchorY = topY - 18
 
-                if obj.health then
-                    if flags.health then
-                        local hp = math.floor(humanoid.Health)
-                        local maxHp = math.floor(humanoid.MaxHealth)
-                        obj.health.Color = flags.healthColor
-                        obj.health.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
-                        obj.health.Text = hp .. " / " .. maxHp
-                        obj.health.Visible = true
-                        lineOffset = lineOffset + 15
-                    else
-                        obj.health.Visible = false
-                    end
-                end
-
-                if obj.dist then
-                    if flags.distance then
-                        obj.dist.Color = flags.distColor
-                        obj.dist.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
-                        obj.dist.Text = tostring(math.floor(dist))
-                        obj.dist.Visible = true
-                        lineOffset = lineOffset + 15
-                    else
-                        obj.dist.Visible = false
-                    end
-                end
+        -- Username
+        if obj.name then
+            if flags.name then
+                if obj.name.Color ~= flags.nameColor then obj.name.Color = flags.nameColor end
+                obj.name.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
+                if obj.name.Text ~= player.Name then obj.name.Text = player.Name end
+                setVisible(obj.name, true)
+                lineOffset += 16
             else
-                for _, d in pairs(obj) do if d then d.Visible = false end end
+                setVisible(obj.name, false)
             end
-        else
-            for _, d in pairs(obj) do if d then d.Visible = false end end
+        end
+
+        -- Species
+        if obj.species then
+            if flags.species and data.species then
+                if obj.species.Color ~= flags.speciesColor then obj.species.Color = flags.speciesColor end
+                obj.species.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
+                if obj.species.Text ~= data.species then obj.species.Text = data.species end
+                setVisible(obj.species, true)
+                lineOffset += 15
+            else
+                setVisible(obj.species, false)
+            end
+        end
+
+        -- Active spell
+        if obj.spell then
+            if flags.spellESP and data.spell then
+                if obj.spell.Color ~= flags.spellColor then obj.spell.Color = flags.spellColor end
+                obj.spell.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
+                local spellText = "Casting : " .. data.spell
+                if obj.spell.Text ~= spellText then obj.spell.Text = spellText end
+                setVisible(obj.spell, true)
+                lineOffset += 15
+            else
+                setVisible(obj.spell, false)
+            end
+        end
+
+        -- Visibility
+        if obj.visible then
+            if flags.visESP then
+                local visibleText = data.visible and "Visible : Yes" or "Visible : No"
+                local wantedColor = data.visible and flags.visYesColor or flags.visNoColor
+                if obj.visible.Color ~= wantedColor then obj.visible.Color = wantedColor end
+                obj.visible.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
+                if obj.visible.Text ~= visibleText then obj.visible.Text = visibleText end
+                setVisible(obj.visible, true)
+                lineOffset += 15
+            else
+                setVisible(obj.visible, false)
+            end
+        end
+
+        -- Surname
+        if obj.character then
+            if flags.character and data.surname then
+                if obj.character.Color ~= flags.charColor then obj.character.Color = flags.charColor end
+                obj.character.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
+                if obj.character.Text ~= data.surname then obj.character.Text = data.surname end
+                setVisible(obj.character, true)
+                lineOffset += 15
+            else
+                setVisible(obj.character, false)
+            end
+        end
+
+        -- Health
+        if obj.health then
+            if flags.health then
+                if obj.health.Color ~= flags.healthColor then obj.health.Color = flags.healthColor end
+                obj.health.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
+                local hpText = data.hp .. " / " .. data.maxHp
+                if obj.health.Text ~= hpText then obj.health.Text = hpText end
+                setVisible(obj.health, true)
+                lineOffset += 15
+            else
+                setVisible(obj.health, false)
+            end
+        end
+
+        -- Distance remains frame-based so it stays smooth.
+        if obj.dist then
+            if flags.distance then
+                if obj.dist.Color ~= flags.distColor then obj.dist.Color = flags.distColor end
+                obj.dist.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
+                local distText = tostring(math.floor(dist))
+                if obj.dist.Text ~= distText then obj.dist.Text = distText end
+                setVisible(obj.dist, true)
+                lineOffset += 15
+            else
+                setVisible(obj.dist, false)
+            end
         end
     end
 end
