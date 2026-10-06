@@ -1,0 +1,640 @@
+-- ============================================================
+-- Nightfall Chronicles ESP - Matcha version
+-- Per-player lines: Username, Species, Spell, Visible, Surname, Health, Distance
+-- Visible: green "Visible : Yes" / red "Visible : No" (based on Invisique)
+-- ============================================================
+
+local Nova = loadstring(httpget("https://raw.githubusercontent.com/Martinikaws/Nova/main/Nova.lua"))() or _G.Nova
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+local WATCHED_SPELLS = { "Ictus", "Motus" }
+
+local flags = {
+    enabled      = false,
+    name         = true,
+    character    = true,
+    species      = true,
+    health       = true,
+    distance     = true,
+    spellESP     = true,
+    visESP       = true,   -- per-player Visible line
+
+    maxDist      = 2000,
+    nameColor    = Color3.fromRGB(255, 255, 255),
+    charColor    = Color3.fromRGB(255, 200, 100),
+    speciesColor = Color3.fromRGB(180, 140, 255),
+    healthColor  = Color3.fromRGB(120, 255, 120),
+    distColor    = Color3.fromRGB(255, 255, 255),
+    spellColor   = Color3.fromRGB(255, 80, 80),
+    visYesColor  = Color3.fromRGB(80, 255, 80),
+    visNoColor   = Color3.fromRGB(255, 80, 80),
+}
+
+local espObjects = {}
+local selectedPlayer = nil
+
+local CONFIG_FILE = "nightfall_config.json"
+
+local function colorToStr(c)
+    return string.format("%d,%d,%d",
+        math.floor(c.R * 255 + 0.5),
+        math.floor(c.G * 255 + 0.5),
+        math.floor(c.B * 255 + 0.5))
+end
+
+local function strToColor(s)
+    local r, g, b = s:match("^(%d+),(%d+),(%d+)$")
+    if not r then return nil end
+    return Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b))
+end
+
+local function saveConfig()
+    local lines = {}
+    for k, v in pairs(flags) do
+        if k == "enabled" then
+        elseif typeof(v) == "Color3" then
+            lines[#lines+1] = k .. "=C:" .. colorToStr(v)
+        elseif type(v) == "boolean" then
+            lines[#lines+1] = k .. "=B:" .. tostring(v)
+        elseif type(v) == "number" then
+            lines[#lines+1] = k .. "=N:" .. tostring(v)
+        end
+    end
+    pcall(function() writefile(CONFIG_FILE, table.concat(lines, "\n")) end)
+end
+
+local function loadConfig()
+    if not isfile(CONFIG_FILE) then return end
+    local ok, raw = pcall(function() return readfile(CONFIG_FILE) end)
+    if not ok or not raw or raw == "" then return end
+    for line in raw:gmatch("[^\n]+") do
+        local key, tag, val = line:match("^([^=]+)=([CBN]):(.+)$")
+        if key and tag and val then
+            if flags[key] ~= nil then
+                if tag == "C" then
+                    local c = strToColor(val)
+                    if c then flags[key] = c end
+                elseif tag == "B" then
+                    flags[key] = (val == "true")
+                elseif tag == "N" then
+                    flags[key] = tonumber(val) or flags[key]
+                end
+            end
+        end
+    end
+end
+
+loadConfig()
+
+local savePending = false
+local function scheduleSave()
+    if savePending then return end
+    savePending = true
+    task.spawn(function()
+        task.wait(0.4)
+        savePending = false
+        saveConfig()
+    end)
+end
+
+local function newText(size)
+    local t = Drawing.new("Text")
+    t.Size = size or 14
+    t.Center = true
+    t.Outline = true
+    t.Visible = false
+    return t
+end
+
+local function removeAll(tbl)
+    if not tbl then return end
+    for _, d in pairs(tbl) do
+        if d and d.Remove then pcall(function() d:Remove() end) end
+    end
+end
+
+local function createESP(player)
+    if player == LocalPlayer then return end
+    if espObjects[player] then return end
+    espObjects[player] = {
+        name      = newText(14),
+        species   = newText(13),
+        spell     = newText(13),
+        visible   = newText(13),   -- per-player Visible line
+        character = newText(13),
+        health    = newText(13),
+        dist      = newText(12),
+    }
+end
+
+local function removeESP(player)
+    if not espObjects[player] then return end
+    removeAll(espObjects[player])
+    espObjects[player] = nil
+end
+
+pcall(function()
+    for _, p in ipairs(Players:GetPlayers()) do createESP(p) end
+end)
+pcall(function()
+    if Players.PlayerAdded then Players.PlayerAdded:Connect(createESP) end
+end)
+pcall(function()
+    if Players.PlayerRemoving then Players.PlayerRemoving:Connect(removeESP) end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(1)
+        local ok, list = pcall(function() return Players:GetPlayers() end)
+        if ok and list then
+            local seen = {}
+            for _, p in ipairs(list) do
+                seen[p] = true
+                if not espObjects[p] and p ~= LocalPlayer then createESP(p) end
+            end
+            for p in pairs(espObjects) do
+                if not seen[p] then removeESP(p) end
+            end
+        end
+    end
+end)
+
+-- ============================================================
+-- READERS
+-- ============================================================
+local function getTitlesGui(character)
+    local head = character:FindFirstChild("Head")
+    if not head then return nil end
+    local titleAtt = head:FindFirstChild("TitleAtt")
+    if not titleAtt then return nil end
+    return titleAtt:FindFirstChild("TitlesGui")
+end
+
+local function getCharacterSurname(character)
+    local gui = getTitlesGui(character)
+    if not gui then return nil end
+    local label = gui:FindFirstChild("DisplayName")
+    if not label or not label:IsA("TextLabel") then return nil end
+    local text = label.Text
+    if text == nil or text == "" then return nil end
+    local surname = text:match("(%S+)$")
+    return surname or text
+end
+
+local function getSpecies(character)
+    local gui = getTitlesGui(character)
+    if not gui then return nil end
+    local label = gui:FindFirstChild("SPECIE")
+    if not label or not label:IsA("TextLabel") then return nil end
+    local text = label.Text
+    if text == nil or text == "" then return nil end
+    return tostring(text)
+end
+
+-- ============================================================
+-- ACTIVE SPELL READER (throttled per-player)
+-- ============================================================
+local spellCache = {}
+
+local function refreshSpellCacheFor(player)
+    local lt = workspace:FindFirstChild("LivingThings")
+    if not lt then return nil end
+    local entry = lt:FindFirstChild(player.Name)
+    if not entry then return nil end
+    local casting = entry:FindFirstChild("CastingSpells")
+    if not casting then return nil end
+
+    for _, spellName in ipairs(WATCHED_SPELLS) do
+        local flag = casting:FindFirstChild(spellName)
+        if flag and flag:IsA("BoolValue") and flag.Value then
+            return spellName
+        end
+    end
+    return nil
+end
+
+local function getWatchedSpell(player)
+    local now = tick()
+    local cached = spellCache[player]
+    if cached and (now - cached.time) < 0.25 then
+        return cached.spell
+    end
+    local spell = refreshSpellCacheFor(player)
+    spellCache[player] = { spell = spell, time = now }
+    return spell
+end
+
+-- ============================================================
+-- PER-PLAYER VISIBILITY READER (throttled)
+-- ============================================================
+local visCache = {}
+
+local function refreshVisFor(player)
+    local lt = workspace:FindFirstChild("LivingThings")
+    if not lt then return true end
+    local entry = lt:FindFirstChild(player.Name)
+    if not entry then return true end
+    local casting = entry:FindFirstChild("CastingSpells")
+    if not casting then return true end
+    local invis = casting:FindFirstChild("Invisique")
+    if invis and invis:IsA("BoolValue") and invis.Value then
+        return false
+    end
+    return true
+end
+
+local function isPlayerVisible(player)
+    local now = tick()
+    local cached = visCache[player]
+    if cached and (now - cached.time) < 0.25 then
+        return cached.visible
+    end
+    local visible = refreshVisFor(player)
+    visCache[player] = { visible = visible, time = now }
+    return visible
+end
+
+-- ============================================================
+-- SOUL LINK READER + PAIR INFERENCE
+-- ============================================================
+local function isSoulLinked(player)
+    local lt = workspace:FindFirstChild("LivingThings")
+    if not lt then return false end
+    local entry = lt:FindFirstChild(player.Name)
+    if not entry then return false end
+    local sl = entry:FindFirstChild("SoulLink")
+    return sl and sl:IsA("BoolValue") and sl.Value == true
+end
+
+local function findSoulPartner(player)
+    local linked = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and isSoulLinked(p) then
+            linked[#linked+1] = p
+        end
+    end
+    if #linked == 2 then
+        if linked[1] == player then return linked[2] end
+        if linked[2] == player then return linked[1] end
+    end
+    return nil
+end
+
+-- ============================================================
+-- RENDER LOOP
+-- ============================================================
+local function renderLoop()
+    if not flags.enabled then
+        for _, obj in pairs(espObjects) do
+            for _, d in pairs(obj) do if d then d.Visible = false end end
+        end
+        return
+    end
+
+    local camPos = Camera.CFrame.Position
+    local maxDist = flags.maxDist
+
+    for player, obj in pairs(espObjects) do
+        local char = player.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+
+        if hrp and humanoid and humanoid.Health > 0 then
+            local worldPos = hrp.Position
+            local screenPos, onScreen = WorldToScreen(worldPos)
+            local dist = (camPos - worldPos).Magnitude
+
+            if onScreen and dist <= maxDist then
+                local boxHeight = math.clamp(1500 / dist, 20, 250)
+                local topY = screenPos.Y - boxHeight * 0.5
+                local lineOffset = 0
+                local textAnchorY = topY - 18
+
+                -- Username
+                if obj.name then
+                    if flags.name then
+                        obj.name.Color = flags.nameColor
+                        obj.name.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
+                        obj.name.Text = player.Name
+                        obj.name.Visible = true
+                        lineOffset = lineOffset + 16
+                    else
+                        obj.name.Visible = false
+                    end
+                end
+
+                -- Species
+                if obj.species then
+                    if flags.species then
+                        local sp = getSpecies(char)
+                        if sp then
+                            obj.species.Color = flags.speciesColor
+                            obj.species.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
+                            obj.species.Text = sp
+                            obj.species.Visible = true
+                            lineOffset = lineOffset + 15
+                        else
+                            obj.species.Visible = false
+                        end
+                    else
+                        obj.species.Visible = false
+                    end
+                end
+
+                -- Casting spell (only when active)
+                if obj.spell then
+                    if flags.spellESP then
+                        local activeSpell = getWatchedSpell(player)
+                        if activeSpell then
+                            obj.spell.Color = flags.spellColor
+                            obj.spell.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
+                            obj.spell.Text = "Casting : " .. activeSpell
+                            obj.spell.Visible = true
+                            lineOffset = lineOffset + 15
+                        else
+                            obj.spell.Visible = false
+                        end
+                    else
+                        obj.spell.Visible = false
+                    end
+                end
+
+                -- Per-player Visible line (green/red based on Invisique)
+                if obj.visible then
+                    if flags.visESP then
+                        local visible = isPlayerVisible(player)
+                        if visible then
+                            obj.visible.Color = flags.visYesColor
+                            obj.visible.Text = "Visible : Yes"
+                        else
+                            obj.visible.Color = flags.visNoColor
+                            obj.visible.Text = "Visible : No"
+                        end
+                        obj.visible.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
+                        obj.visible.Visible = true
+                        lineOffset = lineOffset + 15
+                    else
+                        obj.visible.Visible = false
+                    end
+                end
+
+                -- Surname
+                if obj.character then
+                    if flags.character then
+                        local cName = getCharacterSurname(char)
+                        if cName then
+                            obj.character.Color = flags.charColor
+                            obj.character.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
+                            obj.character.Text = cName
+                            obj.character.Visible = true
+                            lineOffset = lineOffset + 15
+                        else
+                            obj.character.Visible = false
+                        end
+                    else
+                        obj.character.Visible = false
+                    end
+                end
+
+                -- Health
+                if obj.health then
+                    if flags.health then
+                        local hp = math.floor(humanoid.Health)
+                        local maxHp = math.floor(humanoid.MaxHealth)
+                        obj.health.Color = flags.healthColor
+                        obj.health.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
+                        obj.health.Text = hp .. " / " .. maxHp
+                        obj.health.Visible = true
+                        lineOffset = lineOffset + 15
+                    else
+                        obj.health.Visible = false
+                    end
+                end
+
+                -- Distance
+                if obj.dist then
+                    if flags.distance then
+                        obj.dist.Color = flags.distColor
+                        obj.dist.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
+                        obj.dist.Text = tostring(math.floor(dist))
+                        obj.dist.Visible = true
+                        lineOffset = lineOffset + 15
+                    else
+                        obj.dist.Visible = false
+                    end
+                end
+            else
+                for _, d in pairs(obj) do if d then d.Visible = false end end
+            end
+        else
+            for _, d in pairs(obj) do if d then d.Visible = false end end
+        end
+    end
+end
+
+local renderOK = pcall(function()
+    RunService.RenderStepped:Connect(renderLoop)
+end)
+if not renderOK then
+    task.spawn(function()
+        while true do
+            task.wait()
+            pcall(renderLoop)
+        end
+    end)
+end
+
+-- ============================================================
+-- UI
+-- ============================================================
+UI.AddTab("Nightfall", function(tab)
+    -- ===== ESP =====
+    local esp = tab:Section("ESP", "Left")
+
+    esp:Toggle("nf_enabled", "Enable ESP", false, function(on) flags.enabled = on; scheduleSave() end)
+
+    esp:Toggle("nf_name", "Username", flags.name, function(on) flags.name = on; scheduleSave() end)
+    esp:Toggle("nf_species", "Species", flags.species, function(on) flags.species = on; scheduleSave() end)
+    esp:Toggle("nf_character", "Surname", flags.character, function(on) flags.character = on; scheduleSave() end)
+    esp:Tip("Shows only the character's surname")
+    esp:Toggle("nf_health", "Health", flags.health, function(on) flags.health = on; scheduleSave() end)
+    esp:Toggle("nf_distance", "Distance", flags.distance, function(on) flags.distance = on; scheduleSave() end)
+    esp:Toggle("nf_spell", "Active Spell (Ictus / Motus)", flags.spellESP, function(on) flags.spellESP = on; scheduleSave() end)
+    esp:Tip("Shows 'Casting : Ictus' or 'Casting : Motus' under Species when active")
+    esp:Toggle("nf_vis", "Visible (Yes / No)", flags.visESP, function(on) flags.visESP = on; scheduleSave() end)
+    esp:Tip("Per-player: shows Visible : Yes (green) or Visible : No (red)")
+    esp:SliderInt("nf_maxdist", "Max Distance", 100, 10000, flags.maxDist, function(v) flags.maxDist = v; scheduleSave() end)
+
+    -- ===== Actions =====
+    local actions = tab:Section("Actions", "Left")
+    actions:Button("Reset Defaults", function()
+        flags.name = true
+        flags.character = true
+        flags.species = true
+        flags.health = true
+        flags.distance = true
+        flags.spellESP = true
+        flags.visESP = true
+        flags.maxDist = 2000
+        flags.nameColor = Color3.fromRGB(255, 255, 255)
+        flags.charColor = Color3.fromRGB(255, 200, 100)
+        flags.speciesColor = Color3.fromRGB(180, 140, 255)
+        flags.healthColor = Color3.fromRGB(120, 255, 120)
+        flags.distColor = Color3.fromRGB(255, 255, 255)
+        flags.spellColor = Color3.fromRGB(255, 80, 80)
+        flags.visYesColor = Color3.fromRGB(80, 255, 80)
+        flags.visNoColor = Color3.fromRGB(255, 80, 80)
+        scheduleSave()
+        notify("Config reset to defaults", "Nightfall ESP", 3)
+    end)
+    actions:Button("Save Now", function()
+        saveConfig()
+        notify("Config saved", "Nightfall ESP", 2)
+    end)
+
+    -- ===== Colors =====
+    local colors = tab:Section("Colors", "Right")
+
+    colors:Toggle("nf_namecolor_on", "Username Color", true)
+    colors:ColorPicker("nf_namecolor", flags.nameColor.R, flags.nameColor.G, flags.nameColor.B, 1, function(c) flags.nameColor = c; scheduleSave() end)
+
+    colors:Toggle("nf_speciescolor_on", "Species Color", true)
+    colors:ColorPicker("nf_speciescolor", flags.speciesColor.R, flags.speciesColor.G, flags.speciesColor.B, 1, function(c) flags.speciesColor = c; scheduleSave() end)
+
+    colors:Toggle("nf_charcollor_on", "Surname Color", true)
+    colors:ColorPicker("nf_charcollor", flags.charColor.R, flags.charColor.G, flags.charColor.B, 1, function(c) flags.charColor = c; scheduleSave() end)
+
+    colors:Toggle("nf_healthcolor_on", "Health Text Color", true)
+    colors:ColorPicker("nf_healthcolor", flags.healthColor.R, flags.healthColor.G, flags.healthColor.B, 1, function(c) flags.healthColor = c; scheduleSave() end)
+
+    colors:Toggle("nf_distcolor_on", "Distance Color", true)
+    colors:ColorPicker("nf_distcolor", flags.distColor.R, flags.distColor.G, flags.distColor.B, 1, function(c) flags.distColor = c; scheduleSave() end)
+
+    colors:Toggle("nf_spellcolor_on", "Spell Color", true)
+    colors:ColorPicker("nf_spellcolor", flags.spellColor.R, flags.spellColor.G, flags.spellColor.B, 1, function(c) flags.spellColor = c; scheduleSave() end)
+
+    colors:Toggle("nf_visyescolor_on", "Visible Yes Color", true)
+    colors:ColorPicker("nf_visyescolor", flags.visYesColor.R, flags.visYesColor.G, flags.visYesColor.B, 1, function(c) flags.visYesColor = c; scheduleSave() end)
+
+    colors:Toggle("nf_visnocolor_on", "Visible No Color", true)
+    colors:ColorPicker("nf_visnocolor", flags.visNoColor.R, flags.visNoColor.G, flags.visNoColor.B, 1, function(c) flags.visNoColor = c; scheduleSave() end)
+
+    -- ===== Player Info — Select Player =====
+    local info = tab:Section("Select Player", "Left")
+
+    local function buildPlayerList()
+        local list = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer then
+                local dn = p.DisplayName or p.Name
+                list[#list+1] = dn .. " (" .. p.Name .. ")"
+            end
+        end
+        table.sort(list)
+        return list
+    end
+
+    local function findPlayerByEntry(entry)
+        if not entry then return nil end
+        local username = entry:match("%((.-)%)$")
+        if not username then return nil end
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.Name == username then
+                return p
+            end
+        end
+        return nil
+    end
+
+    local playerList = buildPlayerList()
+    if #playerList == 0 then
+        playerList = { "(no other players)" }
+    end
+
+    local dropdown = info:Combo(
+        "nf_selected_player", "Player", playerList, 0,
+        function(idx, entry) selectedPlayer = findPlayerByEntry(entry) end
+    )
+
+    selectedPlayer = findPlayerByEntry(playerList[1])
+
+    -- ===== Player Info — Details =====
+    local details = tab:Section("Details", "Right")
+
+    details:InputText("nf_det_user",    "Username",   "—")
+    details:InputText("nf_det_species", "Species",    "—")
+    details:InputText("nf_det_surname", "Surname",    "—")
+    details:InputText("nf_det_health",  "Health",     "—")
+    details:InputText("nf_det_soul",    "Soul Link",  "—")
+
+    local lastListKey = ""
+    task.spawn(function()
+        while true do
+            task.wait(0.5)
+            local newList = buildPlayerList()
+            if #newList == 0 then newList = { "(no other players)" } end
+            local listKey = table.concat(newList, ",")
+            if listKey ~= lastListKey then
+                lastListKey = listKey
+                pcall(function()
+                    dropdown:Clear()
+                    for _, name in ipairs(newList) do dropdown:Add(name) end
+                    dropdown:SetValue(0)
+                end)
+                local stillHere = false
+                if selectedPlayer then
+                    for _, p in ipairs(Players:GetPlayers()) do
+                        if p == selectedPlayer then stillHere = true break end
+                    end
+                end
+                if not stillHere then
+                    selectedPlayer = findPlayerByEntry(newList[1])
+                end
+            end
+        end
+    end)
+
+    task.spawn(function()
+        while true do
+            task.wait(0.25)
+            if selectedPlayer then
+                local char = selectedPlayer.Character
+                local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+
+                local dn = selectedPlayer.DisplayName or selectedPlayer.Name
+                pcall(function() UI.SetValue("nf_det_user", dn .. " (" .. selectedPlayer.Name .. ")") end)
+
+                local sp = char and getSpecies(char)
+                pcall(function() UI.SetValue("nf_det_species", sp or "?") end)
+
+                local sn = char and getCharacterSurname(char)
+                pcall(function() UI.SetValue("nf_det_surname", sn or "?") end)
+
+                local hpStr = "?"
+                if humanoid then
+                    hpStr = math.floor(humanoid.Health) .. " / " .. math.floor(humanoid.MaxHealth)
+                end
+                pcall(function() UI.SetValue("nf_det_health", hpStr) end)
+
+                if isSoulLinked(selectedPlayer) then
+                    local partner = findSoulPartner(selectedPlayer)
+                    if partner then
+                        local pdn = partner.DisplayName or partner.Name
+                        pcall(function() UI.SetValue("nf_det_soul", pdn .. " (" .. partner.Name .. ")") end)
+                    else
+                        pcall(function() UI.SetValue("nf_det_soul", "Yes") end)
+                    end
+                else
+                    pcall(function() UI.SetValue("nf_det_soul", "") end)
+                end
+            end
+        end
+    end)
+end)
+
+pcall(function() notify("Nightfall ESP loaded", "Nightfall ESP", 3) end)
