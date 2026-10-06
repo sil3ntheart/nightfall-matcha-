@@ -1,5 +1,5 @@
 -- ============================================================
--- ^.^ megs ESP - Matcha version
+-- ^.^ meg ESP - Matcha version
 -- Per-player lines: Username, Species, Spell, Visible, Surname, Health, Distance
 -- Visible: green "Visible : Yes" / red "Visible : No" (based on Invisique)
 -- ============================================================
@@ -37,7 +37,7 @@ local flags = {
 local espObjects = {}
 local selectedPlayer = nil
 
-local CONFIG_FILE = "megs_config.json"
+local CONFIG_FILE = "^.^_meg_config.json"
 
 local function colorToStr(c)
     return string.format("%d,%d,%d",
@@ -445,11 +445,10 @@ end
 -- ============================================================
 -- UI
 -- ============================================================
-UI.AddTab("^.^ megs", function(tab)
+UI.AddTab("^.^ meg", function(tab)
     local esp = tab:Section("ESP", "Left")
 
     esp:Toggle("nf_enabled", "Enable ESP", false, function(on) flags.enabled = on; scheduleSave() end)
-
     esp:Toggle("nf_name", "Username", flags.name, function(on) flags.name = on; scheduleSave() end)
     esp:Toggle("nf_species", "Species", flags.species, function(on) flags.species = on; scheduleSave() end)
     esp:Toggle("nf_character", "Surname", flags.character, function(on) flags.character = on; scheduleSave() end)
@@ -481,11 +480,11 @@ UI.AddTab("^.^ megs", function(tab)
         flags.visYesColor = Color3.fromRGB(80, 255, 80)
         flags.visNoColor = Color3.fromRGB(255, 80, 80)
         scheduleSave()
-        notify("Config reset to defaults", "^.^ megs", 3)
+        notify("Config reset to defaults", "^.^ meg", 3)
     end)
     actions:Button("Save Now", function()
         saveConfig()
-        notify("Config saved", "^.^ megs", 2)
+        notify("Config saved", "^.^ meg", 2)
     end)
 
     local colors = tab:Section("Colors", "Right")
@@ -553,6 +552,7 @@ UI.AddTab("^.^ megs", function(tab)
     selectedPlayer = findPlayerByEntry(playerList[1])
 
     local details = tab:Section("Details", "Right")
+
     details:InputText("nf_det_user",    "Username",   "—")
     details:InputText("nf_det_species", "Species",    "—")
     details:InputText("nf_det_surname", "Surname",    "—")
@@ -606,4 +606,22 @@ UI.AddTab("^.^ megs", function(tab)
                 if humanoid then
                     hpStr = math.floor(humanoid.Health) .. " / " .. math.floor(humanoid.MaxHealth)
                 end
-                pcall(function
+                pcall(function() UI.SetValue("nf_det_health", hpStr) end)
+
+                if isSoulLinked(selectedPlayer) then
+                    local partner = findSoulPartner(selectedPlayer)
+                    if partner then
+                        local pdn = partner.DisplayName or partner.Name
+                        pcall(function() UI.SetValue("nf_det_soul", pdn .. " (" .. partner.Name .. ")") end)
+                    else
+                        pcall(function() UI.SetValue("nf_det_soul", "Yes") end)
+                    end
+                else
+                    pcall(function() UI.SetValue("nf_det_soul", "") end)
+                end
+            end
+        end
+    end)
+end)
+
+pcall(function() notify("^.^ meg loaded", "^.^ meg", 3) end)
