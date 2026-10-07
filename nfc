@@ -1,7 +1,17 @@
 -- ============================================================
--- ^.^ meg ESP - Matcha version
+-- ^.^ meg ESP - Matcha version (v3, optimized)
 -- Per-player lines: Username, Species, Spell, Visible, Surname, Health, Distance
 -- Visible: green "Visible : Yes" / red "Visible : No" (based on Invisique)
+--
+-- Optimizations in this version:
+--  * Character parts (HRP, Humanoid, TitlesGui) cached per player
+--  * Hidden players skipped with a single "already hidden" check
+--  * Text positions only written when they change (whole pixels)
+--  * Drawing objects created lazily, removed after 30s out of view
+--  * Distance / spell / health text built at the data rate, not per frame
+--  * Per-player data updates are staggered to avoid periodic spikes
+--  * Shared LivingThings / CastingSpells lookups (from v2)
+--  * UI loops idle when nothing changed (from v2)
 -- ============================================================
 
 local Nova = loadstring(httpget("https://raw.githubusercontent.com/Martinikaws/Nova/main/Nova.lua"))() or _G.Nova
@@ -10,6 +20,8 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
+
+local floor = math.floor
 
 local WATCHED_SPELLS = { "Ictus", "Motus" }
 
@@ -34,16 +46,44 @@ local flags = {
     visNoColor   = Color3.fromRGB(255, 80, 80),
 }
 
-local espObjects = {}
+-- ============================================================
+-- STATE (defined first so everything below can use it)
+-- ============================================================
+local trackedPlayers = {}   -- player -> true (everyone we should consider)
+local espObjects = {}       -- player -> { Drawing text objects } (created lazily)
+local espState = {}         -- player -> cached parts, data, and draw state
 local selectedPlayer = nil
 
+local OBJECT_IDLE_TIMEOUT = 30 -- seconds hidden before Drawing objects are freed
+
+local function clearESPData(player)
+    espState[player] = nil
+end
+
+local function getState(player)
+    local st = espState[player]
+    if not st then
+        st = { hidden = true, px = {}, py = {} }
+        espState[player] = st
+    end
+    return st
+end
+
+local function isAlive(inst)
+    local ok, parent = pcall(function() return inst.Parent end)
+    return ok and parent ~= nil
+end
+
+-- ============================================================
+-- CONFIG
+-- ============================================================
 local CONFIG_FILE = "^.^_meg_config.json"
 
 local function colorToStr(c)
     return string.format("%d,%d,%d",
-        math.floor(c.R * 255 + 0.5),
-        math.floor(c.G * 255 + 0.5),
-        math.floor(c.B * 255 + 0.5))
+        floor(c.R * 255 + 0.5),
+        floor(c.G * 255 + 0.5),
+        floor(c.B * 255 + 0.5))
 end
 
 local function strToColor(s)
@@ -101,6 +141,9 @@ local function scheduleSave()
     end)
 end
 
+-- ============================================================
+-- DRAWING OBJECTS (created lazily)
+-- ============================================================
 local function newText(size)
     local t = Drawing.new("Text")
     t.Size = size or 14
@@ -117,10 +160,8 @@ local function removeAll(tbl)
     end
 end
 
-local function createESP(player)
-    if player == LocalPlayer then return end
-    if espObjects[player] then return end
-    espObjects[player] = {
+local function createObjects(player)
+    local objs = {
         name      = newText(14),
         species   = newText(13),
         spell     = newText(13),
@@ -129,29 +170,49 @@ local function createESP(player)
         health    = newText(13),
         dist      = newText(12),
     }
+    espObjects[player] = objs
+    local st = espState[player]
+    if st then
+        -- New objects know nothing about previous positions
+        st.px = {}
+        st.py = {}
+    end
+    return objs
+end
+
+local function removeObjects(player)
+    removeAll(espObjects[player])
+    espObjects[player] = nil
+    local st = espState[player]
+    if st then
+        st.px = {}
+        st.py = {}
+        st.hidden = true
+    end
+end
+
+local function trackPlayer(player)
+    if player == LocalPlayer then return end
+    trackedPlayers[player] = true
 end
 
 local function removeESP(player)
-    if not espObjects[player] then return end
-    removeAll(espObjects[player])
-    espObjects[player] = nil
+    removeObjects(player)
+    trackedPlayers[player] = nil
+    clearESPData(player)
 end
 
 pcall(function()
-    for _, p in ipairs(Players:GetPlayers()) do createESP(p) end
+    for _, p in ipairs(Players:GetPlayers()) do trackPlayer(p) end
 end)
 pcall(function()
-    if Players.PlayerAdded then Players.PlayerAdded:Connect(createESP) end
+    if Players.PlayerAdded then Players.PlayerAdded:Connect(trackPlayer) end
 end)
 pcall(function()
-    if Players.PlayerRemoving then
-        Players.PlayerRemoving:Connect(function(player)
-            removeESP(player)
-            clearESPData(player)
-        end)
-    end
+    if Players.PlayerRemoving then Players.PlayerRemoving:Connect(removeESP) end
 end)
 
+-- Once per second: catch missed join/leave events and free idle Drawing objects
 task.spawn(function()
     while true do
         task.wait(1)
@@ -160,18 +221,46 @@ task.spawn(function()
             local seen = {}
             for _, p in ipairs(list) do
                 seen[p] = true
-                if not espObjects[p] and p ~= LocalPlayer then createESP(p) end
+                if p ~= LocalPlayer and not trackedPlayers[p] then trackPlayer(p) end
             end
-            for p in pairs(espObjects) do
+            for p in pairs(trackedPlayers) do
                 if not seen[p] then removeESP(p) end
+            end
+        end
+
+        local now = tick()
+        for player in pairs(espObjects) do
+            local st = espState[player]
+            if st and st.hidden and st.lastSeen and (now - st.lastSeen) > OBJECT_IDLE_TIMEOUT then
+                removeObjects(player)
             end
         end
     end
 end)
 
 -- ============================================================
--- READERS
+-- SHARED LOOKUPS
 -- ============================================================
+local livingThingsCache = nil
+
+local function getLivingThings()
+    if livingThingsCache and isAlive(livingThingsCache) then
+        return livingThingsCache
+    end
+    livingThingsCache = workspace:FindFirstChild("LivingThings")
+    return livingThingsCache
+end
+
+local function getLivingEntry(player)
+    local lt = getLivingThings()
+    return lt and lt:FindFirstChild(player.Name)
+end
+
+local function getCastingFolder(player)
+    local entry = getLivingEntry(player)
+    return entry and entry:FindFirstChild("CastingSpells")
+end
+
 local function getTitlesGui(character)
     local head = character:FindFirstChild("Head")
     if not head then return nil end
@@ -180,8 +269,11 @@ local function getTitlesGui(character)
     return titleAtt:FindFirstChild("TitlesGui")
 end
 
-local function getCharacterSurname(character)
-    local gui = getTitlesGui(character)
+-- ============================================================
+-- READERS
+-- ============================================================
+local function getCharacterSurname(character, gui)
+    gui = gui or getTitlesGui(character)
     if not gui then return nil end
     local label = gui:FindFirstChild("DisplayName")
     if not label or not label:IsA("TextLabel") then return nil end
@@ -191,8 +283,8 @@ local function getCharacterSurname(character)
     return surname or text
 end
 
-local function getSpecies(character)
-    local gui = getTitlesGui(character)
+local function getSpecies(character, gui)
+    gui = gui or getTitlesGui(character)
     if not gui then return nil end
     local label = gui:FindFirstChild("SPECIE")
     if not label or not label:IsA("TextLabel") then return nil end
@@ -201,19 +293,7 @@ local function getSpecies(character)
     return tostring(text)
 end
 
--- ============================================================
--- ACTIVE SPELL READER (throttled per-player)
--- ============================================================
-local spellCache = {}
-
-local function refreshSpellCacheFor(player)
-    local lt = workspace:FindFirstChild("LivingThings")
-    if not lt then return nil end
-    local entry = lt:FindFirstChild(player.Name)
-    if not entry then return nil end
-    local casting = entry:FindFirstChild("CastingSpells")
-    if not casting then return nil end
-
+local function findActiveSpell(casting)
     for _, spellName in ipairs(WATCHED_SPELLS) do
         local flag = casting:FindFirstChild(spellName)
         if flag and flag:IsA("BoolValue") and flag.Value then
@@ -223,54 +303,13 @@ local function refreshSpellCacheFor(player)
     return nil
 end
 
-local function getWatchedSpell(player)
-    local now = tick()
-    local cached = spellCache[player]
-    if cached and (now - cached.time) < 0.25 then
-        return cached.spell
-    end
-    local spell = refreshSpellCacheFor(player)
-    spellCache[player] = { spell = spell, time = now }
-    return spell
-end
-
--- ============================================================
--- PER-PLAYER VISIBILITY READER (throttled)
--- ============================================================
-local visCache = {}
-
-local function refreshVisFor(player)
-    local lt = workspace:FindFirstChild("LivingThings")
-    if not lt then return true end
-    local entry = lt:FindFirstChild(player.Name)
-    if not entry then return true end
-    local casting = entry:FindFirstChild("CastingSpells")
-    if not casting then return true end
+local function isInvisible(casting)
     local invis = casting:FindFirstChild("Invisique")
-    if invis and invis:IsA("BoolValue") and invis.Value then
-        return false
-    end
-    return true
+    return invis and invis:IsA("BoolValue") and invis.Value == true
 end
 
-local function isPlayerVisible(player)
-    local now = tick()
-    local cached = visCache[player]
-    if cached and (now - cached.time) < 0.25 then
-        return cached.visible
-    end
-    local visible = refreshVisFor(player)
-    visCache[player] = { visible = visible, time = now }
-    return visible
-end
-
--- ============================================================
--- SOUL LINK READER + PAIR INFERENCE
--- ============================================================
 local function isSoulLinked(player)
-    local lt = workspace:FindFirstChild("LivingThings")
-    if not lt then return false end
-    local entry = lt:FindFirstChild(player.Name)
+    local entry = getLivingEntry(player)
     if not entry then return false end
     local sl = entry:FindFirstChild("SoulLink")
     return sl and sl:IsA("BoolValue") and sl.Value == true
@@ -293,14 +332,9 @@ end
 -- ============================================================
 -- RENDER LOOP
 -- ============================================================
--- ============================================================
--- OPTIMIZED RENDER LOOP
--- Expensive player-data reads are throttled; screen positioning
--- still updates every frame for smooth ESP movement.
--- ============================================================
-
-local ESP_DATA_INTERVAL = 0.20 -- 5 updates/sec for text/data
-local espDataCache = {}
+local ESP_DATA_INTERVAL = 0.20 -- ~5 data updates/sec per player
+local ESP_RENDER_INTERVAL = 1 / 90
+local lastESPRender = 0
 
 local function setVisible(obj, state)
     if obj and obj.Visible ~= state then
@@ -314,206 +348,205 @@ local function hideESPObject(obj)
     end
 end
 
-local function updateESPData(player, char, humanoid, now)
-    local cache = espDataCache[player]
-    if not cache then
-        cache = {}
-        espDataCache[player] = cache
+-- Hide a player's drawings once; later passes skip them in one check
+local function hidePlayer(player, st)
+    if st.hidden then return end
+    local obj = espObjects[player]
+    if obj then hideESPObject(obj) end
+    st.hidden = true
+end
+
+-- Cache the character's parts; only re-find them when the character changes
+local function resolveParts(st, player)
+    local char = player.Character
+    if not char then
+        st.char, st.hrp, st.humanoid, st.gui = nil, nil, nil, nil
+        return nil
+    end
+    if st.char ~= char then
+        st.char = char
+        st.hrp = nil
+        st.humanoid = nil
+        st.gui = nil
+    end
+    if not st.hrp then st.hrp = char:FindFirstChild("HumanoidRootPart") end
+    if not st.humanoid then st.humanoid = char:FindFirstChildOfClass("Humanoid") end
+    return char
+end
+
+-- Expensive reads + string building happen here, at the data rate
+local function updateESPData(player, st, char, humanoid, dist, now)
+    if st.nextUpdate and now < st.nextUpdate then
+        return
+    end
+    -- First update is immediate, then the next one lands at a random point
+    -- inside the interval so players don't all refresh on the same frame.
+    st.nextUpdate = now + ESP_DATA_INTERVAL * (st.primed and 1 or math.random())
+    st.primed = true
+
+    local gui = st.gui
+    if not (gui and isAlive(gui)) then
+        gui = getTitlesGui(char)
+        st.gui = gui
+    end
+    st.species = getSpecies(char, gui)
+    st.surname = getCharacterSurname(char, gui)
+
+    local casting = nil
+    if flags.spellESP or flags.visESP then
+        casting = getCastingFolder(player)
     end
 
-    if cache.lastUpdate and (now - cache.lastUpdate) < ESP_DATA_INTERVAL then
-        return cache
+    st.spell = nil
+    st.spellText = nil
+    if flags.spellESP and casting then
+        st.spell = findActiveSpell(casting)
+        if st.spell then st.spellText = "Casting : " .. st.spell end
     end
 
-    cache.lastUpdate = now
-
-    -- These GUI searches are now done only 5 times/sec instead of
-    -- once every rendered frame.
-    cache.species = getSpecies(char)
-    cache.surname = getCharacterSurname(char)
-
-    if flags.spellESP then
-        cache.spell = getWatchedSpell(player)
-    else
-        cache.spell = nil
-    end
-
-    if flags.visESP then
-        cache.visible = isPlayerVisible(player)
-    else
-        cache.visible = true
+    st.visible = true
+    if flags.visESP and casting and isInvisible(casting) then
+        st.visible = false
     end
 
     if humanoid then
-        cache.hp = math.floor(humanoid.Health)
-        cache.maxHp = math.floor(humanoid.MaxHealth)
+        st.hp = floor(humanoid.Health)
+        st.maxHp = floor(humanoid.MaxHealth)
+        st.hpText = st.hp .. " / " .. st.maxHp
     end
 
-    return cache
+    st.distText = tostring(floor(dist))
 end
 
-local function clearESPData(player)
-    espDataCache[player] = nil
-    spellCache[player] = nil
-    visCache[player] = nil
+-- Draw one text line; position is only written when it moved a whole pixel
+local function showLine(st, key, d, text, color, x, y)
+    if d.Color ~= color then d.Color = color end
+    if d.Text ~= text then d.Text = text end
+    local px, py = floor(x + 0.5), floor(y + 0.5)
+    if st.px[key] ~= px or st.py[key] ~= py then
+        d.Position = Vector2.new(px, py)
+        st.px[key] = px
+        st.py[key] = py
+    end
+    setVisible(d, true)
 end
-
--- Visual refresh limiter.
--- The game can render at 180+ FPS, but the ESP does not need to
--- reposition every Drawing object on every single rendered frame.
--- 90 Hz keeps it responsive while cutting a large amount of work.
-local ESP_RENDER_INTERVAL = 1 / 90
-local lastESPRender = 0
 
 local function renderLoop()
     local now = tick()
 
-    if flags.enabled and (now - lastESPRender) < ESP_RENDER_INTERVAL then
-        return
-    end
-
-    if flags.enabled then
-        lastESPRender = now
-    end
     if not flags.enabled then
-        for _, obj in pairs(espObjects) do
-            hideESPObject(obj)
+        for player, obj in pairs(espObjects) do
+            local st = espState[player]
+            if not (st and st.hidden) then
+                hideESPObject(obj)
+                if st then st.hidden = true end
+            end
         end
         return
     end
+
+    if (now - lastESPRender) < ESP_RENDER_INTERVAL then
+        return
+    end
+    lastESPRender = now
 
     local camPos = Camera.CFrame.Position
     local maxDist = flags.maxDist
 
-    for player, obj in pairs(espObjects) do
-        local char = player.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+    for player in pairs(trackedPlayers) do
+        local st = getState(player)
+        local char = resolveParts(st, player)
+        local hrp, humanoid = st.hrp, st.humanoid
 
-        if not (hrp and humanoid and humanoid.Health > 0) then
-            hideESPObject(obj)
+        if not (char and hrp and humanoid and humanoid.Health > 0) then
+            hidePlayer(player, st)
             continue
         end
 
         local worldPos = hrp.Position
-        local offset = camPos - worldPos
-        local dist = offset.Magnitude
+        local dist = (camPos - worldPos).Magnitude
 
-        -- Do the cheap distance test before WorldToScreen and all
-        -- expensive text/data work.
+        -- Cheap distance test before WorldToScreen and any data work
         if dist > maxDist then
-            hideESPObject(obj)
+            hidePlayer(player, st)
             continue
         end
 
         local screenPos, onScreen = WorldToScreen(worldPos)
-
         if not onScreen then
-            hideESPObject(obj)
+            hidePlayer(player, st)
             continue
         end
 
-        local data = updateESPData(player, char, humanoid, now)
+        local obj = espObjects[player] or createObjects(player)
+        st.hidden = false
+        st.lastSeen = now
+
+        updateESPData(player, st, char, humanoid, dist, now)
 
         local boxHeight = math.clamp(1500 / math.max(dist, 1), 20, 250)
-        local topY = screenPos.Y - boxHeight * 0.5
-        local lineOffset = 0
-        local textAnchorY = topY - 18
+        local x = screenPos.X
+        local baseY = screenPos.Y - boxHeight * 0.5 - 18
+        local off = 0
 
         -- Username
-        if obj.name then
-            if flags.name then
-                if obj.name.Color ~= flags.nameColor then obj.name.Color = flags.nameColor end
-                obj.name.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
-                if obj.name.Text ~= player.Name then obj.name.Text = player.Name end
-                setVisible(obj.name, true)
-                lineOffset += 16
-            else
-                setVisible(obj.name, false)
-            end
+        if flags.name then
+            showLine(st, "name", obj.name, player.Name, flags.nameColor, x, baseY + off)
+            off += 16
+        else
+            setVisible(obj.name, false)
         end
 
         -- Species
-        if obj.species then
-            if flags.species and data.species then
-                if obj.species.Color ~= flags.speciesColor then obj.species.Color = flags.speciesColor end
-                obj.species.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
-                if obj.species.Text ~= data.species then obj.species.Text = data.species end
-                setVisible(obj.species, true)
-                lineOffset += 15
-            else
-                setVisible(obj.species, false)
-            end
+        if flags.species and st.species then
+            showLine(st, "species", obj.species, st.species, flags.speciesColor, x, baseY + off)
+            off += 15
+        else
+            setVisible(obj.species, false)
         end
 
         -- Active spell
-        if obj.spell then
-            if flags.spellESP and data.spell then
-                if obj.spell.Color ~= flags.spellColor then obj.spell.Color = flags.spellColor end
-                obj.spell.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
-                local spellText = "Casting : " .. data.spell
-                if obj.spell.Text ~= spellText then obj.spell.Text = spellText end
-                setVisible(obj.spell, true)
-                lineOffset += 15
-            else
-                setVisible(obj.spell, false)
-            end
+        if flags.spellESP and st.spellText then
+            showLine(st, "spell", obj.spell, st.spellText, flags.spellColor, x, baseY + off)
+            off += 15
+        else
+            setVisible(obj.spell, false)
         end
 
         -- Visibility
-        if obj.visible then
-            if flags.visESP then
-                local visibleText = data.visible and "Visible : Yes" or "Visible : No"
-                local wantedColor = data.visible and flags.visYesColor or flags.visNoColor
-                if obj.visible.Color ~= wantedColor then obj.visible.Color = wantedColor end
-                obj.visible.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
-                if obj.visible.Text ~= visibleText then obj.visible.Text = visibleText end
-                setVisible(obj.visible, true)
-                lineOffset += 15
-            else
-                setVisible(obj.visible, false)
-            end
+        if flags.visESP then
+            local isVis = st.visible
+            showLine(st, "visible", obj.visible,
+                isVis and "Visible : Yes" or "Visible : No",
+                isVis and flags.visYesColor or flags.visNoColor,
+                x, baseY + off)
+            off += 15
+        else
+            setVisible(obj.visible, false)
         end
 
         -- Surname
-        if obj.character then
-            if flags.character and data.surname then
-                if obj.character.Color ~= flags.charColor then obj.character.Color = flags.charColor end
-                obj.character.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
-                if obj.character.Text ~= data.surname then obj.character.Text = data.surname end
-                setVisible(obj.character, true)
-                lineOffset += 15
-            else
-                setVisible(obj.character, false)
-            end
+        if flags.character and st.surname then
+            showLine(st, "character", obj.character, st.surname, flags.charColor, x, baseY + off)
+            off += 15
+        else
+            setVisible(obj.character, false)
         end
 
         -- Health
-        if obj.health then
-            if flags.health then
-                if obj.health.Color ~= flags.healthColor then obj.health.Color = flags.healthColor end
-                obj.health.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
-                local hpText = data.hp .. " / " .. data.maxHp
-                if obj.health.Text ~= hpText then obj.health.Text = hpText end
-                setVisible(obj.health, true)
-                lineOffset += 15
-            else
-                setVisible(obj.health, false)
-            end
+        if flags.health and st.hpText then
+            showLine(st, "health", obj.health, st.hpText, flags.healthColor, x, baseY + off)
+            off += 15
+        else
+            setVisible(obj.health, false)
         end
 
-        -- Distance remains frame-based so it stays smooth.
-        if obj.dist then
-            if flags.distance then
-                if obj.dist.Color ~= flags.distColor then obj.dist.Color = flags.distColor end
-                obj.dist.Position = Vector2.new(screenPos.X, textAnchorY + lineOffset)
-                local distText = tostring(math.floor(dist))
-                if obj.dist.Text ~= distText then obj.dist.Text = distText end
-                setVisible(obj.dist, true)
-                lineOffset += 15
-            else
-                setVisible(obj.dist, false)
-            end
+        -- Distance (text refreshes at the data rate, position every pass)
+        if flags.distance and st.distText then
+            showLine(st, "dist", obj.dist, st.distText, flags.distColor, x, baseY + off)
+            off += 15
+        else
+            setVisible(obj.dist, false)
         end
     end
 end
@@ -647,6 +680,7 @@ UI.AddTab("^.^ meg", function(tab)
     details:InputText("nf_det_health",  "Health",     "—")
     details:InputText("nf_det_soul",    "Soul Link",  "—")
 
+    -- Player list: only rebuilds the dropdown when the list changes
     local lastListKey = ""
     task.spawn(function()
         while true do
@@ -674,38 +708,53 @@ UI.AddTab("^.^ meg", function(tab)
         end
     end)
 
+    -- Details panel: writes only changed fields, idles when nothing is selected
+    local lastDetails = {}
+    local function setDetail(key, value)
+        if lastDetails[key] ~= value then
+            lastDetails[key] = value
+            pcall(function() UI.SetValue(key, value) end)
+        end
+    end
+
     task.spawn(function()
         while true do
             task.wait(0.25)
-            if selectedPlayer then
-                local char = selectedPlayer.Character
+            local sel = selectedPlayer
+
+            if not sel then
+                setDetail("nf_det_user", "—")
+                setDetail("nf_det_species", "—")
+                setDetail("nf_det_surname", "—")
+                setDetail("nf_det_health", "—")
+                setDetail("nf_det_soul", "—")
+                task.wait(0.75)
+            else
+                local char = sel.Character
                 local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+                local gui = char and getTitlesGui(char)
 
-                local dn = selectedPlayer.DisplayName or selectedPlayer.Name
-                pcall(function() UI.SetValue("nf_det_user", dn .. " (" .. selectedPlayer.Name .. ")") end)
-
-                local sp = char and getSpecies(char)
-                pcall(function() UI.SetValue("nf_det_species", sp or "?") end)
-
-                local sn = char and getCharacterSurname(char)
-                pcall(function() UI.SetValue("nf_det_surname", sn or "?") end)
+                local dn = sel.DisplayName or sel.Name
+                setDetail("nf_det_user", dn .. " (" .. sel.Name .. ")")
+                setDetail("nf_det_species", (char and getSpecies(char, gui)) or "?")
+                setDetail("nf_det_surname", (char and getCharacterSurname(char, gui)) or "?")
 
                 local hpStr = "?"
                 if humanoid then
-                    hpStr = math.floor(humanoid.Health) .. " / " .. math.floor(humanoid.MaxHealth)
+                    hpStr = floor(humanoid.Health) .. " / " .. floor(humanoid.MaxHealth)
                 end
-                pcall(function() UI.SetValue("nf_det_health", hpStr) end)
+                setDetail("nf_det_health", hpStr)
 
-                if isSoulLinked(selectedPlayer) then
-                    local partner = findSoulPartner(selectedPlayer)
+                if isSoulLinked(sel) then
+                    local partner = findSoulPartner(sel)
                     if partner then
                         local pdn = partner.DisplayName or partner.Name
-                        pcall(function() UI.SetValue("nf_det_soul", pdn .. " (" .. partner.Name .. ")") end)
+                        setDetail("nf_det_soul", pdn .. " (" .. partner.Name .. ")")
                     else
-                        pcall(function() UI.SetValue("nf_det_soul", "Yes") end)
+                        setDetail("nf_det_soul", "Yes")
                     end
                 else
-                    pcall(function() UI.SetValue("nf_det_soul", "") end)
+                    setDetail("nf_det_soul", "")
                 end
             end
         end
