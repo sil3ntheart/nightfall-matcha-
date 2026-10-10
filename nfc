@@ -1,5 +1,5 @@
 -- ============================================================
--- ^.^ meg ESP - Matcha version (v3, optimized)
+-- ^.^meg nfc ESP - Matcha version (v3, optimized)
 -- Per-player lines: Username, Species, Spell, Visible, Surname, Health, Distance
 -- Visible: green "Visible : Yes" / red "Visible : No" (based on Invisique)
 --
@@ -566,7 +566,7 @@ end
 -- ============================================================
 -- UI
 -- ============================================================
-UI.AddTab("^.^ meg", function(tab)
+UI.AddTab("^.^meg nfc", function(tab)
     local esp = tab:Section("ESP", "Left")
 
     esp:Toggle("nf_enabled", "Enable ESP", false, function(on) flags.enabled = on; scheduleSave() end)
@@ -601,11 +601,11 @@ UI.AddTab("^.^ meg", function(tab)
         flags.visYesColor = Color3.fromRGB(80, 255, 80)
         flags.visNoColor = Color3.fromRGB(255, 80, 80)
         scheduleSave()
-        notify("Config reset to defaults", "^.^ meg", 3)
+        notify("Config reset to defaults", "^.^meg nfc", 3)
     end)
     actions:Button("Save Now", function()
         saveConfig()
-        notify("Config saved", "^.^ meg", 2)
+        notify("Config saved", "^.^meg nfc", 2)
     end)
 
     local colors = tab:Section("Colors", "Right")
@@ -761,4 +761,4 @@ UI.AddTab("^.^ meg", function(tab)
     end)
 end)
 
-pcall(function() notify("^.^ meg loaded", "^.^ meg", 3) end)
+pcall(function() notify("^.^meg nfc loaded", "^.^meg nfc", 3) end)
