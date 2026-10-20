@@ -1,20 +1,22 @@
 -- ============================================================
--- ^.^meg nfc ESP - Matcha version (v3, optimized)
+-- ^.^meg nfc ESP - Matcha version (v4, fixed colors + hardening)
 -- Per-player lines: Username, Species, Spell, Visible, Surname, Health, Distance
--- Visible: green "Visible : Yes" / red "Visible : No" (based on Invisique)
---
--- Optimizations in this version:
---  * Character parts (HRP, Humanoid, TitlesGui) cached per player
---  * Hidden players skipped with a single "already hidden" check
---  * Text positions only written when they change (whole pixels)
---  * Drawing objects created lazily, removed after 30s out of view
---  * Distance / spell / health text built at the data rate, not per frame
---  * Per-player data updates are staggered to avoid periodic spikes
---  * Shared LivingThings / CastingSpells lookups (from v2)
---  * UI loops idle when nothing changed (from v2)
 -- ============================================================
 
-local Nova = loadstring(httpget("https://raw.githubusercontent.com/Martinikaws/Nova/main/Nova.lua"))() or _G.Nova
+-- Guarded Nova load: never crash the whole script on a network hiccup
+local Nova = _G.Nova
+if not Nova then
+    local ok, body = pcall(function()
+        return httpget("https://raw.githubusercontent.com/Martinikaws/Nova/main/Nova.lua")
+    end)
+    if ok and body and body ~= "" then
+        local fn = loadstring(body)
+        if fn then pcall(function() Nova = fn() end) end
+    end
+end
+if not Nova then
+    pcall(function() notify("Nova failed to load — ESP continuing without it", "^.^meg nfc", 5) end)
+end
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -36,25 +38,29 @@ local flags = {
     visESP       = true,
 
     maxDist      = 2000,
-    nameColor    = Color3.fromRGB(255, 255, 255),
-    charColor    = Color3.fromRGB(255, 200, 100),
-    speciesColor = Color3.fromRGB(180, 140, 255),
-    healthColor  = Color3.fromRGB(120, 255, 120),
-    distColor    = Color3.fromRGB(255, 255, 255),
-    spellColor   = Color3.fromRGB(255, 80, 80),
-    visYesColor  = Color3.fromRGB(80, 255, 80),
-    visNoColor   = Color3.fromRGB(255, 80, 80),
+}
+
+-- Fixed colors — not saved, not configurable.
+local COLORS = {
+    name      = Color3.fromRGB(0xFF, 0xFF, 0xFF), -- FFFFFFFF  white
+    species   = Color3.fromRGB(0xB4, 0x8C, 0xFF), -- B48CFFFF  purple
+    character = Color3.fromRGB(0x30, 0x54, 0x9C), -- 30549CFF  blue
+    health    = Color3.fromRGB(0x78, 0xFF, 0x78), -- 78FF78FF  green
+    dist      = Color3.fromRGB(0xFF, 0xFF, 0xFF), -- FFFFFFFF  white
+    spell     = Color3.fromRGB(0xA5, 0x62, 0x00), -- A56200FF  orange
+    visYes    = Color3.fromRGB(0x50, 0xFF, 0x50), -- 50FF50FF  visible green
+    visNo     = Color3.fromRGB(0xFF, 0x50, 0x50), -- FF5050FF  visible red
 }
 
 -- ============================================================
--- STATE (defined first so everything below can use it)
+-- STATE
 -- ============================================================
-local trackedPlayers = {}   -- player -> true (everyone we should consider)
-local espObjects = {}       -- player -> { Drawing text objects } (created lazily)
-local espState = {}         -- player -> cached parts, data, and draw state
+local trackedPlayers = {}
+local espObjects = {}
+local espState = {}
 local selectedPlayer = nil
 
-local OBJECT_IDLE_TIMEOUT = 30 -- seconds hidden before Drawing objects are freed
+local OBJECT_IDLE_TIMEOUT = 30
 
 local function clearESPData(player)
     espState[player] = nil
@@ -75,29 +81,14 @@ local function isAlive(inst)
 end
 
 -- ============================================================
--- CONFIG
+-- CONFIG (colors no longer persisted — only bools + maxDist)
 -- ============================================================
 local CONFIG_FILE = "^.^_meg_config.json"
-
-local function colorToStr(c)
-    return string.format("%d,%d,%d",
-        floor(c.R * 255 + 0.5),
-        floor(c.G * 255 + 0.5),
-        floor(c.B * 255 + 0.5))
-end
-
-local function strToColor(s)
-    local r, g, b = s:match("^(%d+),(%d+),(%d+)$")
-    if not r then return nil end
-    return Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b))
-end
 
 local function saveConfig()
     local lines = {}
     for k, v in pairs(flags) do
         if k == "enabled" then
-        elseif typeof(v) == "Color3" then
-            lines[#lines+1] = k .. "=C:" .. colorToStr(v)
         elseif type(v) == "boolean" then
             lines[#lines+1] = k .. "=B:" .. tostring(v)
         elseif type(v) == "number" then
@@ -115,14 +106,12 @@ local function loadConfig()
         local key, tag, val = line:match("^([^=]+)=([CBN]):(.+)$")
         if key and tag and val then
             if flags[key] ~= nil then
-                if tag == "C" then
-                    local c = strToColor(val)
-                    if c then flags[key] = c end
-                elseif tag == "B" then
+                if tag == "B" then
                     flags[key] = (val == "true")
                 elseif tag == "N" then
                     flags[key] = tonumber(val) or flags[key]
                 end
+                -- C: (Color3) lines from old configs are ignored
             end
         end
     end
@@ -142,7 +131,7 @@ local function scheduleSave()
 end
 
 -- ============================================================
--- DRAWING OBJECTS (created lazily)
+-- DRAWING OBJECTS
 -- ============================================================
 local function newText(size)
     local t = Drawing.new("Text")
@@ -173,7 +162,6 @@ local function createObjects(player)
     espObjects[player] = objs
     local st = espState[player]
     if st then
-        -- New objects know nothing about previous positions
         st.px = {}
         st.py = {}
     end
@@ -212,7 +200,6 @@ pcall(function()
     if Players.PlayerRemoving then Players.PlayerRemoving:Connect(removeESP) end
 end)
 
--- Once per second: catch missed join/leave events and free idle Drawing objects
 task.spawn(function()
     while true do
         task.wait(1)
@@ -332,7 +319,7 @@ end
 -- ============================================================
 -- RENDER LOOP
 -- ============================================================
-local ESP_DATA_INTERVAL = 0.20 -- ~5 data updates/sec per player
+local ESP_DATA_INTERVAL = 0.20
 local ESP_RENDER_INTERVAL = 1 / 90
 local lastESPRender = 0
 
@@ -348,7 +335,6 @@ local function hideESPObject(obj)
     end
 end
 
--- Hide a player's drawings once; later passes skip them in one check
 local function hidePlayer(player, st)
     if st.hidden then return end
     local obj = espObjects[player]
@@ -356,7 +342,6 @@ local function hidePlayer(player, st)
     st.hidden = true
 end
 
--- Cache the character's parts; only re-find them when the character changes
 local function resolveParts(st, player)
     local char = player.Character
     if not char then
@@ -374,13 +359,10 @@ local function resolveParts(st, player)
     return char
 end
 
--- Expensive reads + string building happen here, at the data rate
 local function updateESPData(player, st, char, humanoid, dist, now)
     if st.nextUpdate and now < st.nextUpdate then
         return
     end
-    -- First update is immediate, then the next one lands at a random point
-    -- inside the interval so players don't all refresh on the same frame.
     st.nextUpdate = now + ESP_DATA_INTERVAL * (st.primed and 1 or math.random())
     st.primed = true
 
@@ -418,7 +400,6 @@ local function updateESPData(player, st, char, humanoid, dist, now)
     st.distText = tostring(floor(dist))
 end
 
--- Draw one text line; position is only written when it moved a whole pixel
 local function showLine(st, key, d, text, color, x, y)
     if d.Color ~= color then d.Color = color end
     if d.Text ~= text then d.Text = text end
@@ -454,105 +435,111 @@ local function renderLoop()
     local maxDist = flags.maxDist
 
     for player in pairs(trackedPlayers) do
-        local st = getState(player)
-        local char = resolveParts(st, player)
-        local hrp, humanoid = st.hrp, st.humanoid
+        -- Wrap each player in pcall so one bad character can't kill the loop
+        local ok = pcall(function()
+            local st = getState(player)
+            local char = resolveParts(st, player)
+            local hrp, humanoid = st.hrp, st.humanoid
 
-        if not (char and hrp and humanoid and humanoid.Health > 0) then
-            hidePlayer(player, st)
-            continue
-        end
+            if not (char and hrp and humanoid and humanoid.Health > 0) then
+                hidePlayer(player, st)
+                return
+            end
 
-        local worldPos = hrp.Position
-        local dist = (camPos - worldPos).Magnitude
+            local worldPos = hrp.Position
+            local dist = (camPos - worldPos).Magnitude
 
-        -- Cheap distance test before WorldToScreen and any data work
-        if dist > maxDist then
-            hidePlayer(player, st)
-            continue
-        end
+            if dist > maxDist then
+                hidePlayer(player, st)
+                return
+            end
 
-        local screenPos, onScreen = WorldToScreen(worldPos)
-        if not onScreen then
-            hidePlayer(player, st)
-            continue
-        end
+            local screenPos, onScreen = WorldToScreen(worldPos)
+            if not onScreen then
+                hidePlayer(player, st)
+                return
+            end
 
-        local obj = espObjects[player] or createObjects(player)
-        st.hidden = false
-        st.lastSeen = now
+            local obj = espObjects[player] or createObjects(player)
+            st.hidden = false
+            st.lastSeen = now
 
-        updateESPData(player, st, char, humanoid, dist, now)
+            updateESPData(player, st, char, humanoid, dist, now)
 
-        local boxHeight = math.clamp(1500 / math.max(dist, 1), 20, 250)
-        local x = screenPos.X
-        local baseY = screenPos.Y - boxHeight * 0.5 - 18
-        local off = 0
+            local boxHeight = math.clamp(1500 / math.max(dist, 1), 20, 250)
+            local x = screenPos.X
+            local baseY = screenPos.Y - boxHeight * 0.5 - 18
+            local off = 0
 
-        -- Username
-        if flags.name then
-            showLine(st, "name", obj.name, player.Name, flags.nameColor, x, baseY + off)
-            off += 16
-        else
-            setVisible(obj.name, false)
-        end
+            -- Username
+            if flags.name then
+                showLine(st, "name", obj.name, player.Name, COLORS.name, x, baseY + off)
+                off += 16
+            else
+                setVisible(obj.name, false)
+            end
 
-        -- Species
-        if flags.species and st.species then
-            showLine(st, "species", obj.species, st.species, flags.speciesColor, x, baseY + off)
-            off += 15
-        else
-            setVisible(obj.species, false)
-        end
+            -- Species
+            if flags.species and st.species then
+                showLine(st, "species", obj.species, st.species, COLORS.species, x, baseY + off)
+                off += 15
+            else
+                setVisible(obj.species, false)
+            end
 
-        -- Active spell
-        if flags.spellESP and st.spellText then
-            showLine(st, "spell", obj.spell, st.spellText, flags.spellColor, x, baseY + off)
-            off += 15
-        else
-            setVisible(obj.spell, false)
-        end
+            -- Active spell
+            if flags.spellESP and st.spellText then
+                showLine(st, "spell", obj.spell, st.spellText, COLORS.spell, x, baseY + off)
+                off += 15
+            else
+                setVisible(obj.spell, false)
+            end
 
-        -- Visibility
-        if flags.visESP then
-            local isVis = st.visible
-            showLine(st, "visible", obj.visible,
-                isVis and "Visible : Yes" or "Visible : No",
-                isVis and flags.visYesColor or flags.visNoColor,
-                x, baseY + off)
-            off += 15
-        else
-            setVisible(obj.visible, false)
-        end
+            -- Visibility
+            if flags.visESP then
+                local isVis = st.visible
+                showLine(st, "visible", obj.visible,
+                    isVis and "Visible : Yes" or "Visible : No",
+                    isVis and COLORS.visYes or COLORS.visNo,
+                    x, baseY + off)
+                off += 15
+            else
+                setVisible(obj.visible, false)
+            end
 
-        -- Surname
-        if flags.character and st.surname then
-            showLine(st, "character", obj.character, st.surname, flags.charColor, x, baseY + off)
-            off += 15
-        else
-            setVisible(obj.character, false)
-        end
+            -- Surname
+            if flags.character and st.surname then
+                showLine(st, "character", obj.character, st.surname, COLORS.character, x, baseY + off)
+                off += 15
+            else
+                setVisible(obj.character, false)
+            end
 
-        -- Health
-        if flags.health and st.hpText then
-            showLine(st, "health", obj.health, st.hpText, flags.healthColor, x, baseY + off)
-            off += 15
-        else
-            setVisible(obj.health, false)
-        end
+            -- Health
+            if flags.health and st.hpText then
+                showLine(st, "health", obj.health, st.hpText, COLORS.health, x, baseY + off)
+                off += 15
+            else
+                setVisible(obj.health, false)
+            end
 
-        -- Distance (text refreshes at the data rate, position every pass)
-        if flags.distance and st.distText then
-            showLine(st, "dist", obj.dist, st.distText, flags.distColor, x, baseY + off)
-            off += 15
-        else
-            setVisible(obj.dist, false)
-        end
+            -- Distance
+            if flags.distance and st.distText then
+                showLine(st, "dist", obj.dist, st.distText, COLORS.dist, x, baseY + off)
+                off += 15
+            else
+                setVisible(obj.dist, false)
+            end
+        end)
+        -- Silent: a single bad player is skipped, the loop lives on
     end
 end
 
+-- Wrap the loop body in pcall so a frame-time error can't kill RenderStepped
 local renderOK = pcall(function()
-    RunService.RenderStepped:Connect(renderLoop)
+    RunService.RenderStepped:Connect(function()
+        pcall(renderLoop)
+    end)
 end)
 if not renderOK then
     task.spawn(function()
@@ -567,6 +554,9 @@ end
 -- UI
 -- ============================================================
 UI.AddTab("^.^meg nfc", function(tab)
+    if _G.__meg_nfc_tab_built then return end
+    _G.__meg_nfc_tab_built = true
+
     local esp = tab:Section("ESP", "Left")
 
     esp:Toggle("nf_enabled", "Enable ESP", false, function(on) flags.enabled = on; scheduleSave() end)
@@ -592,14 +582,6 @@ UI.AddTab("^.^meg nfc", function(tab)
         flags.spellESP = true
         flags.visESP = true
         flags.maxDist = 2000
-        flags.nameColor = Color3.fromRGB(255, 255, 255)
-        flags.charColor = Color3.fromRGB(255, 200, 100)
-        flags.speciesColor = Color3.fromRGB(180, 140, 255)
-        flags.healthColor = Color3.fromRGB(120, 255, 120)
-        flags.distColor = Color3.fromRGB(255, 255, 255)
-        flags.spellColor = Color3.fromRGB(255, 80, 80)
-        flags.visYesColor = Color3.fromRGB(80, 255, 80)
-        flags.visNoColor = Color3.fromRGB(255, 80, 80)
         scheduleSave()
         notify("Config reset to defaults", "^.^meg nfc", 3)
     end)
@@ -607,32 +589,6 @@ UI.AddTab("^.^meg nfc", function(tab)
         saveConfig()
         notify("Config saved", "^.^meg nfc", 2)
     end)
-
-    local colors = tab:Section("Colors", "Right")
-
-    colors:Toggle("nf_namecolor_on", "Username Color", true)
-    colors:ColorPicker("nf_namecolor", flags.nameColor.R, flags.nameColor.G, flags.nameColor.B, 1, function(c) flags.nameColor = c; scheduleSave() end)
-
-    colors:Toggle("nf_speciescolor_on", "Species Color", true)
-    colors:ColorPicker("nf_speciescolor", flags.speciesColor.R, flags.speciesColor.G, flags.speciesColor.B, 1, function(c) flags.speciesColor = c; scheduleSave() end)
-
-    colors:Toggle("nf_charcollor_on", "Surname Color", true)
-    colors:ColorPicker("nf_charcollor", flags.charColor.R, flags.charColor.G, flags.charColor.B, 1, function(c) flags.charColor = c; scheduleSave() end)
-
-    colors:Toggle("nf_healthcolor_on", "Health Text Color", true)
-    colors:ColorPicker("nf_healthcolor", flags.healthColor.R, flags.healthColor.G, flags.healthColor.B, 1, function(c) flags.healthColor = c; scheduleSave() end)
-
-    colors:Toggle("nf_distcolor_on", "Distance Color", true)
-    colors:ColorPicker("nf_distcolor", flags.distColor.R, flags.distColor.G, flags.distColor.B, 1, function(c) flags.distColor = c; scheduleSave() end)
-
-    colors:Toggle("nf_spellcolor_on", "Spell Color", true)
-    colors:ColorPicker("nf_spellcolor", flags.spellColor.R, flags.spellColor.G, flags.spellColor.B, 1, function(c) flags.spellColor = c; scheduleSave() end)
-
-    colors:Toggle("nf_visyescolor_on", "Visible Yes Color", true)
-    colors:ColorPicker("nf_visyescolor", flags.visYesColor.R, flags.visYesColor.G, flags.visYesColor.B, 1, function(c) flags.visYesColor = c; scheduleSave() end)
-
-    colors:Toggle("nf_visnocolor_on", "Visible No Color", true)
-    colors:ColorPicker("nf_visnocolor", flags.visNoColor.R, flags.visNoColor.G, flags.visNoColor.B, 1, function(c) flags.visNoColor = c; scheduleSave() end)
 
     local info = tab:Section("Select Player", "Left")
 
@@ -680,7 +636,6 @@ UI.AddTab("^.^meg nfc", function(tab)
     details:InputText("nf_det_health",  "Health",     "—")
     details:InputText("nf_det_soul",    "Soul Link",  "—")
 
-    -- Player list: only rebuilds the dropdown when the list changes
     local lastListKey = ""
     task.spawn(function()
         while true do
@@ -708,7 +663,6 @@ UI.AddTab("^.^meg nfc", function(tab)
         end
     end)
 
-    -- Details panel: writes only changed fields, idles when nothing is selected
     local lastDetails = {}
     local function setDetail(key, value)
         if lastDetails[key] ~= value then
