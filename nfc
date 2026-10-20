@@ -1,9 +1,9 @@
 -- ============================================================
--- ^.^meg nfc ESP - Matcha version (v4, fixed colors + hardening)
+-- ^.^meg nfc ESP - Matcha version (v7, full-fix)
 -- Per-player lines: Username, Species, Spell, Visible, Surname, Health, Distance
 -- ============================================================
 
--- Guarded Nova load: never crash the whole script on a network hiccup
+-- Guarded Nova load
 local Nova = _G.Nova
 if not Nova then
     local ok, body = pcall(function()
@@ -24,6 +24,8 @@ local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 
 local floor = math.floor
+local clamp = math.clamp
+local clock = os.clock
 
 local WATCHED_SPELLS = { "Ictus", "Motus" }
 
@@ -36,20 +38,18 @@ local flags = {
     distance     = true,
     spellESP     = true,
     visESP       = true,
-
     maxDist      = 2000,
 }
 
--- Fixed colors — not saved, not configurable.
 local COLORS = {
-    name      = Color3.fromRGB(0xFF, 0xFF, 0xFF), -- FFFFFFFF  white
-    species   = Color3.fromRGB(0xB4, 0x8C, 0xFF), -- B48CFFFF  purple
-    character = Color3.fromRGB(0x30, 0x54, 0x9C), -- 30549CFF  blue
-    health    = Color3.fromRGB(0x78, 0xFF, 0x78), -- 78FF78FF  green
-    dist      = Color3.fromRGB(0xFF, 0xFF, 0xFF), -- FFFFFFFF  white
-    spell     = Color3.fromRGB(0xA5, 0x62, 0x00), -- A56200FF  orange
-    visYes    = Color3.fromRGB(0x50, 0xFF, 0x50), -- 50FF50FF  visible green
-    visNo     = Color3.fromRGB(0xFF, 0x50, 0x50), -- FF5050FF  visible red
+    name      = Color3.fromRGB(0xFF, 0xFF, 0xFF),
+    species   = Color3.fromRGB(0xB4, 0x8C, 0xFF),
+    character = Color3.fromRGB(0x30, 0x54, 0x9C),
+    health    = Color3.fromRGB(0x78, 0xFF, 0x78),
+    dist      = Color3.fromRGB(0xFF, 0xFF, 0xFF),
+    spell     = Color3.fromRGB(0xA5, 0x62, 0x00),
+    visYes    = Color3.fromRGB(0x50, 0xFF, 0x50),
+    visNo     = Color3.fromRGB(0xFF, 0x50, 0x50),
 }
 
 -- ============================================================
@@ -58,7 +58,6 @@ local COLORS = {
 local trackedPlayers = {}
 local espObjects = {}
 local espState = {}
-local selectedPlayer = nil
 
 local OBJECT_IDLE_TIMEOUT = 30
 
@@ -81,7 +80,7 @@ local function isAlive(inst)
 end
 
 -- ============================================================
--- CONFIG (colors no longer persisted — only bools + maxDist)
+-- CONFIG
 -- ============================================================
 local CONFIG_FILE = "^.^_meg_config.json"
 
@@ -109,9 +108,12 @@ local function loadConfig()
                 if tag == "B" then
                     flags[key] = (val == "true")
                 elseif tag == "N" then
-                    flags[key] = tonumber(val) or flags[key]
+                    local n = tonumber(val)
+                    if n then
+                        if key == "maxDist" then n = clamp(n, 100, 10000) end
+                        flags[key] = n
+                    end
                 end
-                -- C: (Color3) lines from old configs are ignored
             end
         end
     end
@@ -138,6 +140,7 @@ local function newText(size)
     t.Size = size or 14
     t.Center = true
     t.Outline = true
+    pcall(function() t.Font = Drawing.Fonts.UI end)
     t.Visible = false
     return t
 end
@@ -164,6 +167,7 @@ local function createObjects(player)
     if st then
         st.px = {}
         st.py = {}
+        st.hidden = true
     end
     return objs
 end
@@ -215,7 +219,7 @@ task.spawn(function()
             end
         end
 
-        local now = tick()
+        local now = clock()
         for player in pairs(espObjects) do
             local st = espState[player]
             if st and st.hidden and st.lastSeen and (now - st.lastSeen) > OBJECT_IDLE_TIMEOUT then
@@ -317,6 +321,33 @@ local function findSoulPartner(player)
 end
 
 -- ============================================================
+-- WorldToScreen normalizer
+-- Handles all executor signatures:
+--   (Vector2, bool) | (Vector2|nil, bool) | (x, y, bool) | (bool, Vector2)
+-- ============================================================
+local function toScreen(worldPos)
+    local ok, a, b, c = pcall(WorldToScreen, worldPos)
+    if not ok then return nil, false end
+
+    if typeof(a) == "Vector2" then
+        if b == true then return a, true end
+        return nil, false
+    end
+
+    if type(a) == "number" and type(b) == "number" then
+        if c == true then return Vector2.new(a, b), true end
+        return nil, false
+    end
+
+    if type(a) == "boolean" and typeof(b) == "Vector2" then
+        if a then return b, true end
+        return nil, false
+    end
+
+    return nil, false
+end
+
+-- ============================================================
 -- RENDER LOOP
 -- ============================================================
 local ESP_DATA_INTERVAL = 0.20
@@ -336,7 +367,6 @@ local function hideESPObject(obj)
 end
 
 local function hidePlayer(player, st)
-    if st.hidden then return end
     local obj = espObjects[player]
     if obj then hideESPObject(obj) end
     st.hidden = true
@@ -353,14 +383,17 @@ local function resolveParts(st, player)
         st.hrp = nil
         st.humanoid = nil
         st.gui = nil
+        st.px = {}
+        st.py = {}
+        st.nextUpdate = nil
     end
     if not st.hrp then st.hrp = char:FindFirstChild("HumanoidRootPart") end
     if not st.humanoid then st.humanoid = char:FindFirstChildOfClass("Humanoid") end
     return char
 end
 
-local function updateESPData(player, st, char, humanoid, dist, now)
-    if st.nextUpdate and now < st.nextUpdate then
+local function updateESPData(player, st, char, humanoid, dist, now, force)
+    if not force and st.nextUpdate and now < st.nextUpdate then
         return
     end
     st.nextUpdate = now + ESP_DATA_INTERVAL * (st.primed and 1 or math.random())
@@ -395,6 +428,8 @@ local function updateESPData(player, st, char, humanoid, dist, now)
         st.hp = floor(humanoid.Health)
         st.maxHp = floor(humanoid.MaxHealth)
         st.hpText = st.hp .. " / " .. st.maxHp
+    else
+        st.hpText = nil
     end
 
     st.distText = tostring(floor(dist))
@@ -413,15 +448,13 @@ local function showLine(st, key, d, text, color, x, y)
 end
 
 local function renderLoop()
-    local now = tick()
+    local now = clock()
 
     if not flags.enabled then
         for player, obj in pairs(espObjects) do
+            hideESPObject(obj)
             local st = espState[player]
-            if not (st and st.hidden) then
-                hideESPObject(obj)
-                if st then st.hidden = true end
-            end
+            if st then st.hidden = true end
         end
         return
     end
@@ -434,10 +467,18 @@ local function renderLoop()
     local camPos = Camera.CFrame.Position
     local maxDist = flags.maxDist
 
+    local snapshot = {}
     for player in pairs(trackedPlayers) do
-        -- Wrap each player in pcall so one bad character can't kill the loop
-        local ok = pcall(function()
+        snapshot[#snapshot+1] = player
+    end
+
+    for _, player in ipairs(snapshot) do
+        pcall(function()
+            if player.Parent == nil then return end
+
             local st = getState(player)
+            local wasHidden = st.hidden
+
             local char = resolveParts(st, player)
             local hrp, humanoid = st.hrp, st.humanoid
 
@@ -448,30 +489,33 @@ local function renderLoop()
 
             local worldPos = hrp.Position
             local dist = (camPos - worldPos).Magnitude
-
             if dist > maxDist then
                 hidePlayer(player, st)
                 return
             end
 
-            local screenPos, onScreen = WorldToScreen(worldPos)
-            if not onScreen then
+            local screenPos, onScreen = toScreen(worldPos)
+            if not onScreen or not screenPos then
                 hidePlayer(player, st)
                 return
             end
 
-            local obj = espObjects[player] or createObjects(player)
+            local obj = espObjects[player]
+            if not obj then
+                obj = createObjects(player)
+                wasHidden = true
+            end
+
+            updateESPData(player, st, char, humanoid, dist, now, wasHidden)
+
             st.hidden = false
             st.lastSeen = now
 
-            updateESPData(player, st, char, humanoid, dist, now)
-
-            local boxHeight = math.clamp(1500 / math.max(dist, 1), 20, 250)
+            local boxHeight = clamp(1500 / math.max(dist, 1), 20, 250)
             local x = screenPos.X
             local baseY = screenPos.Y - boxHeight * 0.5 - 18
             local off = 0
 
-            -- Username
             if flags.name then
                 showLine(st, "name", obj.name, player.Name, COLORS.name, x, baseY + off)
                 off += 16
@@ -479,7 +523,6 @@ local function renderLoop()
                 setVisible(obj.name, false)
             end
 
-            -- Species
             if flags.species and st.species then
                 showLine(st, "species", obj.species, st.species, COLORS.species, x, baseY + off)
                 off += 15
@@ -487,7 +530,6 @@ local function renderLoop()
                 setVisible(obj.species, false)
             end
 
-            -- Active spell
             if flags.spellESP and st.spellText then
                 showLine(st, "spell", obj.spell, st.spellText, COLORS.spell, x, baseY + off)
                 off += 15
@@ -495,7 +537,6 @@ local function renderLoop()
                 setVisible(obj.spell, false)
             end
 
-            -- Visibility
             if flags.visESP then
                 local isVis = st.visible
                 showLine(st, "visible", obj.visible,
@@ -507,7 +548,6 @@ local function renderLoop()
                 setVisible(obj.visible, false)
             end
 
-            -- Surname
             if flags.character and st.surname then
                 showLine(st, "character", obj.character, st.surname, COLORS.character, x, baseY + off)
                 off += 15
@@ -515,7 +555,6 @@ local function renderLoop()
                 setVisible(obj.character, false)
             end
 
-            -- Health
             if flags.health and st.hpText then
                 showLine(st, "health", obj.health, st.hpText, COLORS.health, x, baseY + off)
                 off += 15
@@ -523,7 +562,6 @@ local function renderLoop()
                 setVisible(obj.health, false)
             end
 
-            -- Distance
             if flags.distance and st.distText then
                 showLine(st, "dist", obj.dist, st.distText, COLORS.dist, x, baseY + off)
                 off += 15
@@ -531,11 +569,9 @@ local function renderLoop()
                 setVisible(obj.dist, false)
             end
         end)
-        -- Silent: a single bad player is skipped, the loop lives on
     end
 end
 
--- Wrap the loop body in pcall so a frame-time error can't kill RenderStepped
 local renderOK = pcall(function()
     RunService.RenderStepped:Connect(function()
         pcall(renderLoop)
@@ -592,6 +628,14 @@ UI.AddTab("^.^meg nfc", function(tab)
 
     local info = tab:Section("Select Player", "Left")
 
+    -- ========================================================
+    -- SELECTION STATE
+    -- Track selection by USERNAME string, not Player object.
+    -- ========================================================
+    local selectedName = nil
+    local comboCallbackFires = false
+    local lastListKey = ""
+
     local function buildPlayerList()
         local list = {}
         for _, p in ipairs(Players:GetPlayers()) do
@@ -604,30 +648,55 @@ UI.AddTab("^.^meg nfc", function(tab)
         return list
     end
 
-    local function findPlayerByEntry(entry)
-        if not entry then return nil end
-        local username = entry:match("%((.-)%)$")
+    local function usernameFromEntry(entry)
+        if type(entry) ~= "string" then return nil end
+        local username = entry:match("%((.-)%)%s*$")
+        return username
+    end
+
+    local function playerFromUsername(username)
         if not username then return nil end
         for _, p in ipairs(Players:GetPlayers()) do
-            if p.Name == username then
-                return p
-            end
+            if p.Name == username then return p end
         end
         return nil
     end
 
+    -- ========================================================
+    -- DROPDOWN
+    -- Accept both callback signatures: (idx, entry) and (entry).
+    -- ========================================================
     local playerList = buildPlayerList()
-    if #playerList == 0 then
-        playerList = { "(no other players)" }
+    if #playerList == 0 then playerList = { "(no other players)" } end
+
+    local function onComboChanged(a, b)
+        if comboCallbackFires then return end
+        local entry
+        if type(a) == "number" then
+            entry = b
+        elseif type(a) == "string" then
+            entry = a
+        elseif type(b) == "string" then
+            entry = b
+        end
+        local uname = usernameFromEntry(entry)
+        if uname and playerFromUsername(uname) then
+            selectedName = uname
+        else
+            selectedName = nil
+        end
     end
 
     local dropdown = info:Combo(
-        "nf_selected_player", "Player", playerList, 0,
-        function(idx, entry) selectedPlayer = findPlayerByEntry(entry) end
+        "nf_selected_player", "Player", playerList, 0, onComboChanged
     )
 
-    selectedPlayer = findPlayerByEntry(playerList[1])
+    selectedName = usernameFromEntry(playerList[1])
+    lastListKey = table.concat(playerList, ",")
 
+    -- ========================================================
+    -- DETAILS FIELDS
+    -- ========================================================
     local details = tab:Section("Details", "Right")
 
     details:InputText("nf_det_user",    "Username",   "—")
@@ -636,54 +705,73 @@ UI.AddTab("^.^meg nfc", function(tab)
     details:InputText("nf_det_health",  "Health",     "—")
     details:InputText("nf_det_soul",    "Soul Link",  "—")
 
-    local lastListKey = ""
+    local function setDetail(key, value)
+        pcall(function() UI.SetValue(key, value) end)
+    end
+
+    -- ========================================================
+    -- LIST REFRESH (0.5s)
+    -- ========================================================
     task.spawn(function()
         while true do
             task.wait(0.5)
-            local newList = buildPlayerList()
-            if #newList == 0 then newList = { "(no other players)" } end
-            local listKey = table.concat(newList, ",")
-            if listKey ~= lastListKey then
-                lastListKey = listKey
-                pcall(function()
+            pcall(function()
+                local newList = buildPlayerList()
+                if #newList == 0 then newList = { "(no other players)" } end
+                local newKey = table.concat(newList, ",")
+                if newKey == lastListKey then return end
+                lastListKey = newKey
+
+                local desired = selectedName
+                if not desired or not playerFromUsername(desired) then
+                    desired = usernameFromEntry(newList[1])
+                end
+
+                comboCallbackFires = true
+                local ok = pcall(function()
                     dropdown:Clear()
                     for _, name in ipairs(newList) do dropdown:Add(name) end
-                    dropdown:SetValue(0)
-                end)
-                local stillHere = false
-                if selectedPlayer then
-                    for _, p in ipairs(Players:GetPlayers()) do
-                        if p == selectedPlayer then stillHere = true break end
+                    local idx = 0
+                    if desired then
+                        for i, entry in ipairs(newList) do
+                            if usernameFromEntry(entry) == desired then
+                                idx = i - 1
+                                break
+                            end
+                        end
                     end
-                end
-                if not stillHere then
-                    selectedPlayer = findPlayerByEntry(newList[1])
-                end
-            end
+                    dropdown:SetValue(idx)
+                end)
+                comboCallbackFires = false
+
+                selectedName = desired
+            end)
         end
     end)
 
-    local lastDetails = {}
-    local function setDetail(key, value)
-        if lastDetails[key] ~= value then
-            lastDetails[key] = value
-            pcall(function() UI.SetValue(key, value) end)
-        end
-    end
-
+    -- ========================================================
+    -- DETAILS UPDATER (0.25s)
+    -- Resolves selectedName -> Player each tick. Writes unconditionally.
+    -- ========================================================
     task.spawn(function()
         while true do
             task.wait(0.25)
-            local sel = selectedPlayer
+            pcall(function()
+                local username = selectedName
+                local sel = username and playerFromUsername(username) or nil
 
-            if not sel then
-                setDetail("nf_det_user", "—")
-                setDetail("nf_det_species", "—")
-                setDetail("nf_det_surname", "—")
-                setDetail("nf_det_health", "—")
-                setDetail("nf_det_soul", "—")
-                task.wait(0.75)
-            else
+                if not sel then
+                    if username and not playerFromUsername(username) then
+                        selectedName = nil
+                    end
+                    setDetail("nf_det_user", "—")
+                    setDetail("nf_det_species", "—")
+                    setDetail("nf_det_surname", "—")
+                    setDetail("nf_det_health", "—")
+                    setDetail("nf_det_soul", "—")
+                    return
+                end
+
                 local char = sel.Character
                 local humanoid = char and char:FindFirstChildOfClass("Humanoid")
                 local gui = char and getTitlesGui(char)
@@ -710,7 +798,7 @@ UI.AddTab("^.^meg nfc", function(tab)
                 else
                     setDetail("nf_det_soul", "")
                 end
-            end
+            end)
         end
     end)
 end)
