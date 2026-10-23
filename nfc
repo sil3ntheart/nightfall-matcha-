@@ -1,793 +1,149 @@
-local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
+-- ============================================================
+-- ^.^meg nfc -- ESP (final audited version)
+-- ============================================================
 
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Lighting = game:GetService("Lighting")
-local VirtualInputManager = game:GetService("VirtualInputManager")
-local PhysicsService = game:GetService("PhysicsService")
-local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
-
-local floor = math.floor
-local clamp = math.clamp
-local clock = os.clock
-
-if _G.__megs_esp_conn then
-    pcall(function() _G.__megs_esp_conn:Disconnect() end)
-    _G.__megs_esp_conn = nil
-end
-if _G.__megs_esp_cleanup then
-    pcall(_G.__megs_esp_cleanup)
-    _G.__megs_esp_cleanup = nil
-end
-
-local bypassRan = false
-local fpsBoostEnabled = false
-local originalParticleStates = {}
-local keepAliveRunning = true
-
-local function hasFiresignal()
-    return type(firesignal) == "function"
-end
-
-do
-    pcall(function() PhysicsService:RegisterCollisionGroup("MegsHitboxGroup") end)
-    pcall(function() PhysicsService:CollisionGroupSetCollidable("MegsHitboxGroup", "MegsHitboxGroup", false) end)
-    pcall(function() PhysicsService:CollisionGroupSetCollidable("MegsHitboxGroup", "Default", false) end)
-end
-
-local hitboxEnabled = false
-local hitboxSize = Vector3.new(10, 10, 10)
-local hitboxTransparency = 0.7
-local hitboxShow = false
-
-local vampireCDEnabled = false
-local wolfCDEnabled    = false
-local witchCDEnabled   = false
-
-local unstableCDEnabled = false
-local serumCDEnabled    = false
-local soulbindCDEnabled = false
-local geminiCDEnabled   = false
-
-local expressionCDEnabled      = false
-local ancientCDEnabled         = false
-local darkCDEnabled            = false
-local astralCDEnabled          = false
-local awakenedSoulbindCDEnabled = false
-local originalMagicCDEnabled   = false
-local connectiveCDEnabled      = false
-
-local vampireCDList = {
-    "NeckSnap", "WristSnap", "BloodHeal", "Feed", "SpineBreak",
-    "EyeGouge", "ThroatRip", "BlinkAttack", "MistMaw", "MistCharge",
-    "SkyfallReaver", "VampireStep",
-}
-local wolfCDList = { "ClawedBoxing", "GutKick", "MenacingGlare", "NeckSnap" }
-local witchCDList = { "Ictus", "Aquamalia", "Immobilus", "Invisique", "Ossox", "PoenaDoloris" }
-
-local unstableCDList = {
-    "Dissulta", "QuarantineSpell", "Stellabunde", "TelekineticScream",
-}
-local serumCDList = {
-    "OverheadCrush", "SerumBite", "StakeThrow", "KnuckleDown",
-}
-local soulbindCDList = {
-    "TelekineticWristSnap", "SanguisSicco", "SanguisDucatur", "OmnisDormit",
-    "HarvestOverflow", "NemoUnusAnimabusCarnem",
-}
-local geminiCDList = {
-    "ISaidHey", "Ignalusa", "Ignarious", "PervenioSupervenioAdvehor", "ResistusMaledi",
-}
-
-local expressionCDList = {
-    "Vados", "Restraint", "PhasmatosAerisCirculo", "DoloremInferunt", "Sanitatum",
-}
-local ancientCDList = {
-    "VineManipulation", "SequunturSomnia", "MemoryOverload", "AhShaLana",
-}
-local darkCDList = {
-    "InvidiumCalamactus", "DarkBlast", "DarkBeam", "Autem", "Ascendo",
-    "AdvancedJapanesePurgingSpell", "SiphonHug", "MagicRevolve", "DarkMagicLocator",
-}
-local astralCDList = {
-    "CrowTransformation", "BrainMelt", "CardiacArrest", "PhaseCollapse", "SygilSpell",
-    "VampirismWeakening", "AncestralEradication", "ToxinsRemedy",
-}
-local awakenedSoulbindCDList = {
-    "SonicScream", "Soulbinding", "TelekineticCombo", "HarvestChaos", "LightningStrikeSpell",
-    "MassTelekineticSnap", "MemoryWipingSpell", "NemoUnusAnimabusCarnem",
-}
-local originalMagicCDList = {
-    "AdvancedPainInfliction", "CrowStorm", "LinkShatter", "ProtectiveSaltCircle",
-    "RestrainingChains", "VictasConfracta", "VampirismReversal", "BloodlineChannel",
-}
-local connectiveCDList = {
-    "SoulLink", "ToolDestruction", "AdvancedAneurysm", "Wraithstep", "Victas",
-    "SanguinemConfractus", "FatedPursuit", "EnchantedBind", "ConnectiveField",
-}
-
-local hitboxHookedChars = {}
-local hitboxCharConns = {}
-
-local noclipEnabled = false
-local originalCollisions = {}
-local noclipCharConn = nil
-
-local autoStruggleEnabled = false
-local lastProcessedText = ""
-local nonAsciiWarned = false
-
-local STAFF_GROUP_ID = 35585413
-local STAFF_RANK_THRESHOLD = 3
-local staffNotifyEnabled = false
-local staffOnJoinConnection = nil
-local currentStaff = {}
-
-local originalLighting = {
-    ClockTime            = Lighting.ClockTime,
-    Brightness           = Lighting.Brightness,
-    GlobalShadows        = Lighting.GlobalShadows,
-    FogEnd               = Lighting.FogEnd,
-    FogStart             = Lighting.FogStart,
-    Ambient              = Lighting.Ambient,
-    OutdoorAmbient       = Lighting.OutdoorAmbient,
-    ColorShift_Top       = Lighting.ColorShift_Top,
-    ColorShift_Bottom    = Lighting.ColorShift_Bottom,
-    ExposureCompensation = Lighting.ExposureCompensation,
-    QualityLevel         = nil,
-}
-pcall(function()
-    originalLighting.QualityLevel = settings().Rendering.QualityLevel
-end)
-
-local originalAtmosphere = nil
-do
-    local atm = Lighting:FindFirstChildOfClass("Atmosphere")
-    if atm then
-        originalAtmosphere = {
-            Density = atm.Density, Offset = atm.Offset, Color = atm.Color,
-            Decay = atm.Decay, Haze = atm.Haze, Glare = atm.Glare,
-        }
-    end
-end
-
-local WorldValues   = workspace:FindFirstChild("WorldValues")
-local WorldStatuses = workspace:FindFirstChild("WorldStatuses")
-local rainFlag      = WorldValues   and WorldValues:FindFirstChild("rain")
-local redStormFlag  = WorldStatuses and WorldStatuses:FindFirstChild("RedStorm")
-
-local originalWeather = {
-    rain     = (rainFlag and rainFlag.Value) or false,
-    redStorm = (redStormFlag and redStormFlag.Value) or false,
-}
-
-local weatherPresets = {
-    day = {
-        rain = false, redStorm = false,
-        lighting = { ClockTime = 12, Brightness = 4, FogEnd = 100000, FogStart = 0,
-            Ambient = Color3.fromRGB(70, 70, 70), OutdoorAmbient = Color3.fromRGB(128, 128, 128),
-            ColorShift_Top = Color3.fromRGB(0, 0, 0), ColorShift_Bottom = Color3.fromRGB(0, 0, 0),
-            ExposureCompensation = 0 },
-        atmosphere = { Density = 0.3, Haze = 0.0, Glare = 0.0,
-            Color = Color3.fromRGB(199, 199, 199), Decay = Color3.fromRGB(106, 112, 125) },
-    },
-    sundown = {
-        rain = false, redStorm = false,
-        lighting = { ClockTime = 18.2, Brightness = 3, FogEnd = 100000, FogStart = 0,
-            Ambient = Color3.fromRGB(90, 60, 40), OutdoorAmbient = Color3.fromRGB(180, 120, 80),
-            ColorShift_Top = Color3.fromRGB(80, 40, 20), ColorShift_Bottom = Color3.fromRGB(40, 20, 10),
-            ExposureCompensation = 0.1 },
-        atmosphere = { Density = 0.3, Haze = 0.2, Glare = 0.1,
-            Color = Color3.fromRGB(230, 170, 140), Decay = Color3.fromRGB(120, 80, 60) },
-    },
-    night = {
-        rain = false, redStorm = false,
-        lighting = { ClockTime = 0, Brightness = 1, FogEnd = 100000, FogStart = 0,
-            Ambient = Color3.fromRGB(20, 20, 40), OutdoorAmbient = Color3.fromRGB(40, 40, 70),
-            ColorShift_Top = Color3.fromRGB(10, 10, 30), ColorShift_Bottom = Color3.fromRGB(5, 5, 20),
-            ExposureCompensation = 0.2 },
-        atmosphere = { Density = 0.4, Haze = 0.5, Glare = 0.2,
-            Color = Color3.fromRGB(30, 30, 60), Decay = Color3.fromRGB(15, 15, 35) },
-    },
-    dawn = {
-        rain = false, redStorm = false,
-        lighting = { ClockTime = 6, Brightness = 2, FogEnd = 100000, FogStart = 0,
-            Ambient = Color3.fromRGB(120, 90, 80), OutdoorAmbient = Color3.fromRGB(200, 150, 120),
-            ColorShift_Top = Color3.fromRGB(100, 70, 50), ColorShift_Bottom = Color3.fromRGB(60, 40, 30),
-            ExposureCompensation = 0.1 },
-        atmosphere = { Density = 0.3, Haze = 0.3, Glare = 0.15,
-            Color = Color3.fromRGB(210, 170, 160), Decay = Color3.fromRGB(110, 80, 70) },
-    },
-    foggy = {
-        rain = false, redStorm = false,
-        lighting = { ClockTime = 12, Brightness = 3, FogEnd = 150, FogStart = 0,
-            Ambient = Color3.fromRGB(100, 100, 100), OutdoorAmbient = Color3.fromRGB(150, 150, 150),
-            ColorShift_Top = Color3.fromRGB(0, 0, 0), ColorShift_Bottom = Color3.fromRGB(0, 0, 0),
-            ExposureCompensation = 0 },
-        atmosphere = { Density = 0.6, Haze = 1.0, Glare = 0.3,
-            Color = Color3.fromRGB(180, 180, 180), Decay = Color3.fromRGB(120, 120, 120) },
-    },
-    rain = {
-        rain = true, redStorm = false,
-        lighting = { ClockTime = 14, Brightness = 2, FogEnd = 800, FogStart = 0,
-            Ambient = Color3.fromRGB(80, 80, 90), OutdoorAmbient = Color3.fromRGB(110, 110, 120),
-            ColorShift_Top = Color3.fromRGB(20, 20, 30), ColorShift_Bottom = Color3.fromRGB(10, 10, 20),
-            ExposureCompensation = 0.1 },
-        atmosphere = { Density = 0.55, Haze = 1.0, Glare = 0.5,
-            Color = Color3.fromRGB(70, 70, 80), Decay = Color3.fromRGB(40, 40, 50) },
-    },
-    red_storm = {
-        rain = false, redStorm = true,
-        lighting = { ClockTime = 2, Brightness = 4, FogEnd = 100000, FogStart = 0,
-            Ambient = Color3.fromRGB(93, 93, 93), OutdoorAmbient = Color3.fromRGB(135, 23, 27),
-            ColorShift_Top = Color3.fromRGB(60, 10, 10), ColorShift_Bottom = Color3.fromRGB(40, 5, 5),
-            ExposureCompensation = 0.75 },
-        atmosphere = { Density = 0.5, Haze = 1.0, Glare = 0.5,
-            Color = Color3.fromRGB(95, 65, 100), Decay = Color3.fromRGB(45, 25, 55) },
-    },
-}
-
-local currentPresetName = nil
-
-local function applyLightingTable(tbl)
-    for prop, value in pairs(tbl) do
-        pcall(function() Lighting[prop] = value end)
-    end
-end
-
-local function applyAtmosphereTable(tbl)
-    local atm = Lighting:FindFirstChildOfClass("Atmosphere")
-    if not atm or not tbl then return end
-    pcall(function()
-        if tbl.Density ~= nil then atm.Density = tbl.Density end
-        if tbl.Haze    ~= nil then atm.Haze    = tbl.Haze    end
-        if tbl.Glare   ~= nil then atm.Glare   = tbl.Glare   end
-        if tbl.Color   ~= nil then atm.Color   = tbl.Color   end
-        if tbl.Decay   ~= nil then atm.Decay   = tbl.Decay   end
-        if tbl.Offset  ~= nil then atm.Offset  = tbl.Offset  end
-    end)
-end
-
-local function getRainSound()
-    local char = LocalPlayer.Character
-    if not char then return nil end
-    local rh = char:FindFirstChild("rainHandler")
-    if not rh then return nil end
-    return rh:FindFirstChild("rainSound")
-end
-
-local function setRainSoundState(wantPlaying)
-    local snd = getRainSound()
-    if not snd then return false end
-    pcall(function()
-        if wantPlaying then
-            snd.Looped = true
-            if not snd.IsPlaying then snd:Play() end
-        else
-            if snd.IsPlaying then snd:Stop() end
-        end
-    end)
-    return true
-end
-
-local function applyWeatherFlags(rain, redStorm)
-    if rainFlag then pcall(function() rainFlag.Value = rain end) end
-    if redStormFlag then pcall(function() redStormFlag.Value = redStorm end) end
-    if rain then setRainSoundState(true) else setRainSoundState(false) end
-end
-
-local function restoreLightingAndAtmosphere()
-    for prop, value in pairs(originalLighting) do
-        if prop ~= "QualityLevel" then
-            pcall(function() Lighting[prop] = value end)
-        end
-    end
-    if originalAtmosphere then applyAtmosphereTable(originalAtmosphere) end
-end
-
-local function applyPreset(name)
-    local preset = weatherPresets[name]
-    if not preset then return end
-    applyWeatherFlags(preset.rain, preset.redStorm)
-    if preset.lighting   then applyLightingTable(preset.lighting)     end
-    if preset.atmosphere then applyAtmosphereTable(preset.atmosphere) end
-    currentPresetName = name
-end
-
-task.spawn(function()
-    while keepAliveRunning do
-        task.wait(3)
-        if currentPresetName then
-            local preset = weatherPresets[currentPresetName]
-            if preset then
-                local drift = false
-                if rainFlag and rainFlag.Value ~= preset.rain then drift = true end
-                if redStormFlag and redStormFlag.Value ~= preset.redStorm then drift = true end
-                if drift then applyPreset(currentPresetName) end
-            end
-        end
-    end
-end)
-
-LocalPlayer.CharacterAdded:Connect(function()
-    task.wait(0.5)
-    if currentPresetName and weatherPresets[currentPresetName]
-        and weatherPresets[currentPresetName].rain then
-        setRainSoundState(true)
-    end
-end)
-
-local connections = {}
-local function track(conn)
-    if conn then connections[#connections + 1] = conn end
-    return conn
-end
-local function untrack(conn)
-    if not conn then return end
-    for i = #connections, 1, -1 do
-        if connections[i] == conn then
-            table.remove(connections, i)
-        end
-    end
-end
-local function disconnectTracked(conn)
-    if not conn then return end
-    pcall(function() conn:Disconnect() end)
-    untrack(conn)
-end
-
-local remote = ReplicatedStorage:FindFirstChild("AntiCheatRemote")
-
-if remote
-    and type(getgc) == "function"
-    and type(debug) == "table"
-    and type(debug.getinfo) == "function"
-    and type(debug.getupvalue) == "function" then
-
-    local WANTED_UPVALUES = 7
-
-    local function holdsRemote(fn)
-        for index = 1, WANTED_UPVALUES do
-            local ok, value = pcall(debug.getupvalue, fn, index)
-            if ok and value == remote then return true end
-        end
-        return false
-    end
-
-    local function findFlag()
-        local ok, objects = pcall(getgc)
-        if not ok or type(objects) ~= "table" then return nil end
-        for _, value in ipairs(objects) do
-            if type(value) == "function" then
-                local okInfo, info = pcall(debug.getinfo, value)
-                if okInfo and type(info) == "table" and info.nups == WANTED_UPVALUES then
-                    if holdsRemote(value) then return value end
-                end
-            end
-        end
-        return nil
-    end
-
-    local flag = findFlag()
-    if flag then
-        bypassRan = true
-        if type(hookfunction) == "function" then
-            pcall(hookfunction, flag, function() end)
-        else
-            task.spawn(function()
-                while keepAliveRunning do
-                    for index = 1, WANTED_UPVALUES do
-                        local ok, value = pcall(debug.getupvalue, flag, index)
-                        if ok then
-                            if type(value) == "number" and value > 0 then
-                                pcall(debug.setupvalue, flag, index, 0)
-                            elseif type(value) == "table" then
-                                pcall(table.clear, value)
-                            end
-                        end
-                    end
-                    task.wait(1)
-                end
-            end)
-        end
-    end
-end
-
-local window = Rayfield:CreateWindow({
-    name = "Megs gui",
-    subtitle = "v1.1.7",
-    sidebarLayout = true,
-    theme = "cobalt",
-    configuration = { autoSave = true, autoLoad = true, fileName = "MegsGuiConfig" },
-})
-
-local isInitialLoad = true
-task.delay(2, function() isInitialLoad = false end)
-
-local function NotifySafe(tbl)
-    if not isInitialLoad then
-        window:Notify(tbl)
-    end
-end
-
-local espFlags = {
-    enabled = false, name = true, species = true, bloodline = true,
-    health = true, distance = true, spellESP = true, visESP = true,
-    maxDist = 2000, totemESP = true,
-}
+local CLASS_COLOR = Color3.fromRGB(200, 160, 255)
 
 local COLORS = {
-    name      = Color3.fromRGB(0xFF, 0xFF, 0xFF),
-    species   = Color3.fromRGB(0xB4, 0x8C, 0xFF),
-    bloodline = Color3.fromRGB(0x30, 0x54, 0x9C),
-    dist      = Color3.fromRGB(0xFF, 0xFF, 0xFF),
-    spell     = Color3.fromRGB(0x06, 0x77, 0xA5),
-    totem     = Color3.fromRGB(0x30, 0x54, 0x9C),
+    species    = CLASS_COLOR,
+    name       = Color3.fromRGB(255, 255, 255),
+    bloodline  = Color3.fromRGB(80, 160, 255),
+    spell      = Color3.fromRGB(255, 140, 0),
+    invisible  = Color3.fromRGB(255, 80, 80),
+    health     = Color3.fromRGB(80, 255, 80),
+    distance   = Color3.fromRGB(255, 255, 255),
 }
 
-local function syncFlagsFromRayfield()
-    local F = window.Flags
-    if not F then return end
-
-    if F.ESPEnabled   ~= nil then espFlags.enabled   = F.ESPEnabled end
-    if F.ESPName      ~= nil then espFlags.name      = F.ESPName end
-    if F.ESPSpecies   ~= nil then espFlags.species   = F.ESPSpecies end
-    if F.ESPBloodline ~= nil then espFlags.bloodline = F.ESPBloodline end
-    if F.ESPHealth    ~= nil then espFlags.health    = F.ESPHealth end
-    if F.ESPDistance  ~= nil then espFlags.distance  = F.ESPDistance end
-    if F.ESPSpell     ~= nil then espFlags.spellESP  = F.ESPSpell end
-    if F.ESPVisible   ~= nil then espFlags.visESP    = F.ESPVisible end
-    if F.TotemESP     ~= nil then espFlags.totemESP  = F.TotemESP end
-    if F.ESPMaxDist   ~= nil then
-        local v = tonumber(F.ESPMaxDist)
-        if v then espFlags.maxDist = clamp(v, 100, 10000) end
-    end
-
-    if F.ColorName      then COLORS.name      = F.ColorName end
-    if F.ColorSpecies   then COLORS.species   = F.ColorSpecies end
-    if F.ColorBloodline then COLORS.bloodline = F.ColorBloodline end
-    if F.ColorDistance  then COLORS.dist      = F.ColorDistance end
-    if F.ColorSpell     then COLORS.spell     = F.ColorSpell end
-
-    if F.WeatherGlobalShadows ~= nil then
-        pcall(function() Lighting.GlobalShadows = F.WeatherGlobalShadows end)
-    end
-
-    if F.HitboxShow ~= nil then
-        hitboxShow = F.HitboxShow
-        hitboxTransparency = hitboxShow and 0.7 or 1
-    end
-
-    if F.HitboxSize ~= nil then
-        local v = tonumber(F.HitboxSize)
-        if v then hitboxSize = Vector3.new(v, v, v) end
-    end
-
-    if F.HitboxEnabled ~= nil then
-        hitboxEnabled = F.HitboxEnabled
-    end
-
-    if F.VampireCD ~= nil then vampireCDEnabled = F.VampireCD end
-    if F.WolfCD    ~= nil then wolfCDEnabled    = F.WolfCD    end
-    if F.WitchCD   ~= nil then witchCDEnabled   = F.WitchCD   end
-
-    if F.UnstableCD ~= nil then unstableCDEnabled = F.UnstableCD end
-    if F.SerumCD    ~= nil then serumCDEnabled    = F.SerumCD    end
-    if F.SoulbindCD ~= nil then soulbindCDEnabled = F.SoulbindCD end
-    if F.GeminiCD   ~= nil then geminiCDEnabled   = F.GeminiCD   end
-
-    if F.ExpressionCD       ~= nil then expressionCDEnabled       = F.ExpressionCD end
-    if F.AncientCD          ~= nil then ancientCDEnabled          = F.AncientCD end
-    if F.DarkCD             ~= nil then darkCDEnabled             = F.DarkCD end
-    if F.AstralCD           ~= nil then astralCDEnabled           = F.AstralCD end
-    if F.AwakenedSoulbindCD ~= nil then awakenedSoulbindCDEnabled = F.AwakenedSoulbindCD end
-    if F.OriginalMagicCD    ~= nil then originalMagicCDEnabled    = F.OriginalMagicCD end
-    if F.ConnectiveCD       ~= nil then connectiveCDEnabled       = F.ConnectiveCD end
-
-    if F.StaffNotify ~= nil then staffNotifyEnabled = F.StaffNotify end
-    if F.NoclipEnabled ~= nil then noclipEnabled = F.NoclipEnabled end
-
-    if F.AutoStruggle ~= nil then autoStruggleEnabled = F.AutoStruggle end
-
-    if F.Theme then
-        pcall(function() window:ChangeTheme(F.Theme) end)
-    end
-end
-
-local MapLocations = {
-    ["Cure Tomb"]       = Vector3.new(485.13,  -67.09,  59.68),
-    ["Witch House"]     = Vector3.new(-1138.57, 37.16, 642.42),
-    ["Qetsiyah Cabin"]  = Vector3.new(-503.82,  33.16, 590.57),
-    ["Church"]          = Vector3.new(-1152.08, 34.09, -1109.13),
-    ["Weapon Shop"]     = Vector3.new(-1030.82, 34.09, -1496.35),
-    ["Grill"]           = Vector3.new(-1172.88, 34.51, -1671.91),
-    ["Voodoo Shop"]     = Vector3.new(-803.48,  34.35, -1910.04),
-    ["Under Cemetery"]  = Vector3.new(-1183.13, 1.52,  -751.13),
-    ["Secret TV Room"]  = Vector3.new(-1166.15, 1.83,  -711.86),
+local CLASS_COLORS = {
+    Tribrid = CLASS_COLOR, OriginalHybrid = CLASS_COLOR, Hybrid = CLASS_COLOR,
+    OriginalVampire = CLASS_COLOR, OriginalWerewitch = CLASS_COLOR, Werewitch = CLASS_COLOR,
+    Vampire = CLASS_COLOR, Werewolf = CLASS_COLOR, Heretic = CLASS_COLOR,
+    Siphoner = CLASS_COLOR, Witch = CLASS_COLOR, Phoenix = CLASS_COLOR,
+    Psychic = CLASS_COLOR, HellSpirit = CLASS_COLOR, Human = CLASS_COLOR,
 }
 
-local selectedLocation = nil
+local CLASS_PRIORITY = {
+    "Tribrid", "OriginalHybrid", "Hybrid",
+    "OriginalVampire", "OriginalWerewitch", "Werewitch",
+    "Vampire", "Werewolf",
+    "Heretic", "Siphoner", "Witch",
+    "Phoenix", "Psychic", "HellSpirit", "Human",
+}
 
-local function safeTeleport(targetPos, label)
-    local char = LocalPlayer.Character
-    if not (char and char:FindFirstChild("HumanoidRootPart")) then
-        NotifySafe({ title = "Teleport", content = "Character not found.", duration = 3 })
-        return
-    end
-    local offsets = { 0, -3, 3, 6, 10, 20, -10, 50 }
-    local finalPos = targetPos
-    local found = false
-    for _, dy in ipairs(offsets) do
-        local testPos = targetPos + Vector3.new(0, dy, 0)
-        local params = RaycastParams.new()
-        params.FilterType = Enum.RaycastFilterType.Exclude
-        params.FilterDescendantsInstances = { char }
-        local hit = workspace:Raycast(testPos + Vector3.new(0, 5, 0), Vector3.new(0, -80, 0), params)
-        if hit then
-            finalPos = hit.Position + Vector3.new(0, 3, 0)
-            found = true
-            break
-        end
-    end
-    char.HumanoidRootPart.CFrame = CFrame.new(finalPos)
-    if found then
-        NotifySafe({ title = "Teleport", content = "Teleported to " .. label, duration = 3 })
-    else
-        NotifySafe({ title = "Teleport", content = "No floor near " .. label .. " — using raw position.", duration = 4 })
-    end
-end
+local WATCHED_SPELLS = { "Ictus", "Motus" }
 
-local function getStaffInfo(player)
-    local ok, rank = pcall(function() return player:GetRankInGroup(STAFF_GROUP_ID) end)
-    if not ok then return nil end
-    if rank < STAFF_RANK_THRESHOLD then return nil end
-    local ok2, role = pcall(function() return player:GetRoleInGroup(STAFF_GROUP_ID) end)
-    return {
-        rank = rank,
-        role = ok2 and role or "Staff",
-    }
-end
+local Players     = game:GetService("Players")
+local RunService  = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local Camera      = workspace.CurrentCamera
 
-local function checkAndAddStaff(player)
-    if player == LocalPlayer then return nil end
-    if not player.Parent then return nil end
-    local info = getStaffInfo(player)
-    if info then
-        currentStaff[player] = info
-        return info
-    end
-    return nil
-end
+local floor, max, clamp = math.floor, math.max, math.clamp
+local Vector2_new = Vector2.new
 
-local function refreshStaffList()
-    currentStaff = {}
-    local staffCount = 0
-    for _, p in ipairs(Players:GetPlayers()) do
-        if checkAndAddStaff(p) then staffCount += 1 end
-    end
-    return staffCount
-end
+local MAX_TRACKED = 50
 
-local function setupStaffJoinWatcher()
-    if staffOnJoinConnection then
-        disconnectTracked(staffOnJoinConnection)
-        staffOnJoinConnection = nil
-    end
-    staffOnJoinConnection = Players.PlayerAdded:Connect(function(player)
-        task.wait(1.5)
-        local info = checkAndAddStaff(player)
-        if info and staffNotifyEnabled then
-            NotifySafe({
-                title = "Staff Joined",
-                content = "A member of staff has joined: " .. player.Name .. " (" .. info.role .. ")",
-                duration = 8,
-            })
-        end
+pcall(function() math.randomseed(tick() * 1000) end)
+
+do
+    local ok, src = pcall(function()
+        return httpget("https://raw.githubusercontent.com/Martinikaws/Nova/main/Nova.lua")
     end)
-    track(staffOnJoinConnection)
-end
-
-local function onStaffToggleChanged(v)
-    staffNotifyEnabled = v
-    if v then
-        setupStaffJoinWatcher()
-        local count = refreshStaffList()
-        NotifySafe({
-            title = "Staff Monitor",
-            content = "Watching for staff. Currently in server: " .. count,
-            duration = 5,
-        })
-    else
-        if staffOnJoinConnection then
-            disconnectTracked(staffOnJoinConnection)
-            staffOnJoinConnection = nil
+    if ok and src and src ~= "" then
+        local loadOk, fn = pcall(loadstring, src)
+        if loadOk and type(fn) == "function" then
+            local execOk, err = pcall(fn)
+            if not execOk then warn("Nova failed: " .. tostring(err)) end
         end
     end
 end
 
-if staffNotifyEnabled then
-    task.spawn(function()
-        task.wait(0.5)
-        setupStaffJoinWatcher()
-        currentStaff = {}
-        for _, p in ipairs(Players:GetPlayers()) do
-            checkAndAddStaff(p)
-        end
-    end)
-end
-
-local function saveCollisions(char)
-    originalCollisions = {}
-    for _, part in ipairs(char:GetDescendants()) do
-        if part:IsA("BasePart") then
-            originalCollisions[part] = part.CanCollide
-        end
-    end
-end
-
-local function restoreCollisions(char)
-    for part, state in pairs(originalCollisions) do
-        if part and part.Parent then
-            pcall(function() part.CanCollide = state end)
-        end
-    end
-    originalCollisions = {}
-end
-
-if not noclipCharConn then
-    noclipCharConn = LocalPlayer.CharacterAdded:Connect(function(char)
-        if noclipEnabled and char then
-            task.wait(0.3)
-            saveCollisions(char)
-        end
-    end)
-end
-
-task.spawn(function()
-    while keepAliveRunning do
-        task.wait(0.2)
-        if noclipEnabled then
-            local char = LocalPlayer.Character
-            if char then
-                if next(originalCollisions) == nil then
-                    saveCollisions(char)
-                end
-                for _, part in ipairs(char:GetDescendants()) do
-                    if part:IsA("BasePart") and part.CanCollide then
-                        pcall(function() part.CanCollide = false end)
-                    end
-                end
-            end
-        end
-    end
-end)
-
-local function getStruggleTextLabel()
-    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    if not playerGui then return nil end
-    local effects = playerGui:FindFirstChild("Effects")
-    if not effects then return nil end
-    local system = effects:FindFirstChild("AbilityStruggleSystem")
-                or effects:FindFirstChild("AStruggleSystem")
-    if not system then return nil end
-    local frame = system:FindFirstChild("Frame")
-    if not frame then return nil end
-    return frame:FindFirstChild("TextLabel")
-end
-
-local function getKeyCode(char)
-    char = string.upper(char)
-    if char:match("^[A-Z]$") then
-        return Enum.KeyCode[char]
-    end
-    return nil
-end
-
-task.spawn(function()
-    while keepAliveRunning do
-        task.wait(0.03)
-        if autoStruggleEnabled then
-            local textLabel = getStruggleTextLabel()
-            if not textLabel or not textLabel.Visible then
-                lastProcessedText = ""
-            elseif textLabel and textLabel.Visible then
-                local currentText = textLabel.Text
-                if #currentText == 1 then
-                    if currentText ~= lastProcessedText then
-                        local keyCode = getKeyCode(currentText)
-                        if keyCode then
-                            lastProcessedText = currentText
-                            pcall(function()
-                                VirtualInputManager:SendKeyEvent(true, keyCode, false, game)
-                            end)
-                            task.wait(0.02)
-                            pcall(function()
-                                VirtualInputManager:SendKeyEvent(false, keyCode, false, game)
-                            end)
-                        else
-                            if not nonAsciiWarned then
-                                nonAsciiWarned = true
-                                NotifySafe({
-                                    title = "Mora Miserium",
-                                    content = "Encountered a non A-Z key. Auto-struggle may miss some letters.",
-                                    duration = 6,
-                                })
-                            end
-                        end
-                    end
-                elseif #currentText == 0 then
-                    lastProcessedText = ""
-                end
-            end
-        end
-    end
-end)
-
-local function healthColor(hp, maxHp)
-    if not maxHp or maxHp <= 0 then
-        return Color3.fromRGB(0xFF, 0xFF, 0xFF)
-    end
-    local pct = math.clamp(hp / maxHp, 0, 1)
-    local stops = {
-        { 1.00, Color3.fromRGB(0x00, 0xCC, 0x00) },
-        { 0.75, Color3.fromRGB(0xCC, 0xCC, 0x00) },
-        { 0.50, Color3.fromRGB(0xFF, 0x99, 0x00) },
-        { 0.25, Color3.fromRGB(0xFF, 0x44, 0x00) },
-        { 0.00, Color3.fromRGB(0xCC, 0x00, 0x00) },
-    }
-    for i = 1, #stops - 1 do
-        local a, b = stops[i], stops[i + 1]
-        if pct <= a[1] and pct >= b[1] then
-            local t = (pct - b[1]) / (a[1] - b[1])
-            return a[2]:Lerp(b[2], 1 - t)
-        end
-    end
-    return stops[#stops][2]
-end
+local flags = {
+    enabled   = false,
+    name      = true,
+    bloodline = true,
+    species   = true,
+    health    = true,
+    distance  = true,
+    spellESP  = true,
+    visESP    = true,
+    maxDist   = 2000,
+}
 
 local trackedPlayers = {}
-local espObjects = {}
-local espState = {}
-local totemObjects = {}
+local trackedCount   = 0
+local espObjects     = {}
+local espState       = {}
+local selectedPlayer = nil
 
-local ESP_DATA_INTERVAL = 0.20
-local ESP_RENDER_INTERVAL = 1 / 60
-local lastESPRender = 0
+local OBJECT_IDLE_TIMEOUT = 30
 
-local drawingAvailable =
-    type(Drawing) == "table" and type(Drawing.new) == "function"
-
-local function isAlive(inst)
-    return inst ~= nil and inst.Parent ~= nil
-end
+local function clearESPData(player) espState[player] = nil end
 
 local function getState(player)
     local st = espState[player]
     if not st then
-        st = { hidden = true, px = {}, py = {} }
+        st = { hidden = true, px = {}, py = {}, lastSeen = tick() }
         espState[player] = st
     end
     return st
 end
 
-local function newText(size)
-    local t = Drawing.new("Text")
-    t.Size = size or 14
-    t.Center = true
-    t.Outline = true
-    pcall(function() t.Font = Drawing.Fonts.UI end)
-    t.Visible = false
-    return t
+local function isAlive(inst)
+    if not inst then return false end
+    local ok, parent = pcall(function() return inst.Parent end)
+    return ok and parent ~= nil
 end
 
-local function newLine(thickness)
-    local l = Drawing.new("Line")
-    l.Thickness = thickness or 1
-    l.Transparency = 1
-    l.Visible = false
-    return l
+local CONFIG_FILE = "^.^meg_config.json"
+
+local function saveConfig()
+    local lines = {}
+    for k, v in pairs(flags) do
+        if k ~= "enabled" then
+            if type(v) == "boolean" then
+                lines[#lines+1] = k .. "=B:" .. tostring(v)
+            elseif type(v) == "number" then
+                lines[#lines+1] = k .. "=N:" .. tostring(v)
+            end
+        end
+    end
+    pcall(function() writefile(CONFIG_FILE, table.concat(lines, "\n")) end)
+end
+
+local function loadConfig()
+    if not isfile(CONFIG_FILE) then return end
+    local ok, raw = pcall(function() return readfile(CONFIG_FILE) end)
+    if not ok or not raw or raw == "" then return end
+    for line in raw:gmatch("[^\n]+") do
+        local key, tag, val = line:match("^([^=]+)=([BN]):(.+)$")
+        if key and tag and val and flags[key] ~= nil then
+            if tag == "B" then flags[key] = (val == "true")
+            elseif tag == "N" then
+                local n = tonumber(val)
+                if n and n == n and n ~= math.huge and n ~= -math.huge then
+                    if key == "maxDist" then
+                        n = clamp(n, 100, 10000)
+                    end
+                    flags[key] = n
+                end
+            end
+        end
+    end
+end
+
+loadConfig()
+
+local savePending = false
+local function scheduleSave()
+    if savePending then return end
+    savePending = true
+    task.spawn(function() task.wait(0.4); savePending = false; saveConfig() end)
+end
+
+local function newText(size)
+    local t = Drawing.new("Text")
+    t.Size = size or 14; t.Center = true; t.Outline = true; t.Visible = false
+    return t
 end
 
 local function removeAll(tbl)
@@ -799,24 +155,17 @@ end
 
 local function createObjects(player)
     local objs = {
-        name      = newText(14),
         species   = newText(13),
+        name      = newText(14),
+        bloodline = newText(13),
         spell     = newText(13),
         visible   = newText(13),
-        bloodline = newText(13),
-        hpOutline = newLine(7),
-        hpBg      = newLine(5),
-        hpFill    = newLine(5),
+        health    = newText(13),
         dist      = newText(12),
     }
-    objs.name.Center   = true
-    objs.hpOutline.Color = Color3.fromRGB(200, 200, 200)
-    objs.hpOutline.Transparency = 0.7
-    objs.hpBg.Color = Color3.fromRGB(0, 0, 0)
-    objs.hpBg.Transparency = 0.4
     espObjects[player] = objs
     local st = espState[player]
-    if st then st.px = {}; st.py = {}; st.hidden = true end
+    if st then st.px = {}; st.py = {} end
     return objs
 end
 
@@ -827,82 +176,60 @@ local function removeObjects(player)
     if st then st.px = {}; st.py = {}; st.hidden = true end
 end
 
-local function createTotemObjects(part)
-    local objs = { label = newText(14) }
-    objs.label.Color = COLORS.totem
-    objs.label.Center = true
-    totemObjects[part] = objs
-    return objs
-end
-
-local function removeTotemObjects(part)
-    removeAll(totemObjects[part])
-    totemObjects[part] = nil
-end
-
-local function setVisible(obj, state)
-    if obj and obj.Visible ~= state then obj.Visible = state end
-end
-
-local function hideESPObject(obj)
-    if not obj then return end
-    for _, d in pairs(obj) do
-        if d then setVisible(d, false) end
-    end
-end
-
-local function removeEveryObject()
-    for player in pairs(espObjects) do removeObjects(player) end
-    espObjects = {}
-    for part in pairs(totemObjects) do removeTotemObjects(part) end
-    totemObjects = {}
-end
-
-_G.__megs_esp_cleanup = function()
-    removeEveryObject()
-    trackedPlayers = {}
-    espState = {}
-end
-
 local function trackPlayer(player)
     if player == LocalPlayer then return end
+    if trackedPlayers[player] then return end
+    if trackedCount >= MAX_TRACKED then return end
     trackedPlayers[player] = true
-end
-
-local function restoreHitbox(player)
-    if not player or not player.Character then return end
-    local rootPart = player.Character:FindFirstChild("HumanoidRootPart")
-    if rootPart then
-        local box = rootPart:FindFirstChild("CustomHitbox")
-        if box then box:Destroy() end
-    end
+    trackedCount = trackedCount + 1
 end
 
 local function removeESP(player)
     removeObjects(player)
-    trackedPlayers[player] = nil
-    espState[player] = nil
-    currentStaff[player] = nil
-    hitboxHookedChars[player.UserId] = nil
-    local conn = hitboxCharConns[player.UserId]
-    if conn then
-        pcall(function() conn:Disconnect() end)
-        hitboxCharConns[player.UserId] = nil
+    if trackedPlayers[player] then
+        trackedPlayers[player] = nil
+        trackedCount = trackedCount - 1
     end
-    restoreHitbox(player)
+    clearESPData(player)
 end
 
-pcall(function()
-    for _, p in ipairs(Players:GetPlayers()) do trackPlayer(p) end
-    track(Players.PlayerAdded:Connect(trackPlayer))
-    track(Players.PlayerRemoving:Connect(removeESP))
+pcall(function() for _, p in ipairs(Players:GetPlayers()) do trackPlayer(p) end end)
+pcall(function() if Players.PlayerAdded then Players.PlayerAdded:Connect(trackPlayer) end end)
+pcall(function() if Players.PlayerRemoving then Players.PlayerRemoving:Connect(removeESP) end end)
+
+task.spawn(function()
+    while true do
+        task.wait(2)
+        local ok, list = pcall(function() return Players:GetPlayers() end)
+        if ok and list then
+            local seen = {}
+            for _, p in ipairs(list) do
+                seen[p] = true
+                if p ~= LocalPlayer and not trackedPlayers[p] then trackPlayer(p) end
+            end
+            for p in pairs(trackedPlayers) do if not seen[p] then removeESP(p) end end
+            for p in pairs(espState) do
+                if not seen[p] and not trackedPlayers[p] and not espObjects[p] then espState[p] = nil end
+            end
+        end
+        local now = tick()
+        for player in pairs(espObjects) do
+            local st = espState[player]
+            if st and st.hidden and st.lastSeen and (now - st.lastSeen) > OBJECT_IDLE_TIMEOUT then
+                removeObjects(player)
+            end
+        end
+    end
 end)
 
 local livingThingsCache = nil
+
 local function getLivingThings()
-    if livingThingsCache and isAlive(livingThingsCache) then return livingThingsCache end
-    livingThingsCache = workspace:FindFirstChild("LivingThings")
-    return livingThingsCache
+    local lt = livingThingsCache
+    if lt and isAlive(lt) then return lt end
+    lt = workspace:FindFirstChild("LivingThings")
+    livingThingsCache = lt
+    return lt
 end
 
 local function getLivingEntry(player)
@@ -916,39 +243,89 @@ local function getCastingFolder(player)
 end
 
 local function getTitlesGui(character)
-    local head = character and character:FindFirstChild("Head")
-    if not head then return nil end
-    local titleAtt = head:FindFirstChild("TitleAtt")
-    if not titleAtt then return nil end
-    return titleAtt:FindFirstChild("TitlesGui")
-end
-
-local function getBloodline(character, gui)
-    gui = gui or getTitlesGui(character)
-    if not gui then return nil end
-    local label = gui:FindFirstChild("DisplayName")
-    if not label or not label:IsA("TextLabel") then return nil end
-    local text = label.Text
-    if text == nil or text == "" then return nil end
-    return text:match("(%S+)$") or text
-end
-
-local function getSpecies(character, gui)
-    gui = gui or getTitlesGui(character)
-    if not gui then return nil end
-    local label = gui:FindFirstChild("SPECIE")
-    if not label or not label:IsA("TextLabel") then return nil end
-    local text = label.Text
-    if text == nil or text == "" then return nil end
-    return tostring(text)
-end
-
-local function getAbilityEquipped(character)
-    local ae = character and character:FindFirstChild("AbilityEquipped")
-    if ae and ae:IsA("StringValue") and ae.Value ~= "" then
-        return ae.Value
+    if not character then return nil end
+    local head = character:FindFirstChild("Head")
+    if head then
+        local titleAtt = head:FindFirstChild("TitleAtt")
+        if titleAtt then
+            local gui = titleAtt:FindFirstChild("TitlesGui")
+            if gui then return gui end
+        end
+    end
+    local lt = getLivingThings()
+    if lt then
+        local entry = lt:FindFirstChild(character.Name)
+        if entry then
+            local titleAtt = entry:FindFirstChild("TitleAtt")
+            if titleAtt then
+                local gui = titleAtt:FindFirstChild("TitlesGui")
+                if gui then return gui end
+            end
+            local gui = entry:FindFirstChild("TitlesGui")
+            if gui then return gui end
+        end
     end
     return nil
+end
+
+local function getCharacterBloodline(character, gui, player)
+    local text = nil
+    if gui then
+        local label = gui:FindFirstChild("DisplayName")
+        if label and label:IsA("TextLabel") then
+            text = label.Text
+        end
+    end
+    if not text or text == "" then return nil end
+
+    local first, bloodline = text:match("^(%S+)%s+(.+)$")
+    if not bloodline or bloodline == "" then return nil end
+
+    bloodline = bloodline:gsub("%s+$", "")
+    if bloodline == "" then return nil end
+    if first and first:lower() == bloodline:lower() then return nil end
+    if player and bloodline:lower() == player.Name:lower() then return nil end
+
+    return bloodline
+end
+
+local function getSpeciesText(character, gui)
+    gui = gui or getTitlesGui(character)
+    if gui then
+        for _, labelName in ipairs({ "SPECIE", "Specie", "Species", "SPECIES" }) do
+            local label = gui:FindFirstChild(labelName)
+            if label and label:IsA("TextLabel") then
+                local text = label.Text
+                if text and text ~= "" then return tostring(text) end
+            end
+        end
+    end
+    return nil
+end
+
+local function getClassColor(character)
+    if not character then return nil, nil end
+    local statuses = character:FindFirstChild("Statuses")
+    if not statuses then return nil, nil end
+    for _, name in ipairs(CLASS_PRIORITY) do
+        local flag = statuses:FindFirstChild(name)
+        if flag and flag:IsA("BoolValue") and flag.Value then
+            return name, CLASS_COLORS[name]
+        end
+    end
+    return nil, nil
+end
+
+local function findActiveSpells(casting)
+    local active = {}
+    for _, spellName in ipairs(WATCHED_SPELLS) do
+        local flag = casting:FindFirstChild(spellName)
+        if flag and flag:IsA("BoolValue") and flag.Value then
+            active[#active+1] = spellName
+        end
+    end
+    if #active == 0 then return nil end
+    return table.concat(active, ", ")
 end
 
 local function isInvisible(casting)
@@ -956,22 +333,41 @@ local function isInvisible(casting)
     return invis and invis:IsA("BoolValue") and invis.Value == true
 end
 
-local function toScreen(worldPos)
-    if not Camera then return nil, false end
-    local ok, v, onScreen = pcall(function()
-        return Camera:WorldToViewportPoint(worldPos)
-    end)
-    if not ok or typeof(v) ~= "Vector3" or onScreen ~= true then
-        return nil, false
+local function isSoulLinked(player)
+    local entry = getLivingEntry(player)
+    if not entry then return false end
+    local sl = entry:FindFirstChild("SoulLink")
+    return sl and sl:IsA("BoolValue") and sl.Value == true
+end
+
+local function findSoulPartner(player, linkedList)
+    local linked = linkedList
+    if not linked then
+        linked = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and isSoulLinked(p) then linked[#linked+1] = p end
+        end
     end
-    local vp = Camera.ViewportSize
-    if v.X < 0 or v.Y < 0 or v.X > vp.X or v.Y > vp.Y then
-        return nil, false
+    if #linked == 2 then
+        if linked[1] == player then return linked[2] end
+        if linked[2] == player then return linked[1] end
     end
-    return Vector2.new(v.X, v.Y), true
+    return nil
+end
+
+local ESP_RENDER_INTERVAL = 1 / 60
+local lastESPRender       = 0
+
+local function setVisible(obj, state)
+    if obj and obj.Visible ~= state then obj.Visible = state end
+end
+
+local function hideESPObject(obj)
+    for _, d in pairs(obj) do if d then setVisible(d, false) end end
 end
 
 local function hidePlayer(player, st)
+    if st.hidden then return end
     local obj = espObjects[player]
     if obj then hideESPObject(obj) end
     st.hidden = true
@@ -980,50 +376,66 @@ end
 local function resolveParts(st, player)
     local char = player.Character
     if not char then
-        st.char, st.hrp, st.humanoid, st.gui = nil, nil, nil, nil
+        st.char, st.hrp, st.humanoid = nil, nil, nil
+        st.gui = nil; st.casting = nil; st.lastGui = nil; st.guiStamp = nil
         return nil
     end
     if st.char ~= char then
         st.char = char
         st.hrp = nil; st.humanoid = nil; st.gui = nil
-        st.px = {}; st.py = {}; st.nextUpdate = nil
-        st.species = nil; st.bloodline = nil; st.spellText = nil
-        st.visible = true
-        st.hp = nil; st.maxHp = nil; st.hpColor = nil; st.hpPct = nil
+        st.casting = nil; st.guiStamp = nil; st.lastGui = nil
+        st.speciesText = nil; st.bloodline = nil; st.speciesColor = nil
+        st.isInvis = nil; st.spellText = nil; st.hpText = nil
+        st.casting = getCastingFolder(player)
     end
     if not st.hrp then st.hrp = char:FindFirstChild("HumanoidRootPart") end
     if not st.humanoid then st.humanoid = char:FindFirstChildOfClass("Humanoid") end
     return char
 end
 
-local function updateESPData(player, st, char, humanoid, dist, now, force)
-    if not force and st.nextUpdate and now < st.nextUpdate then return end
-    st.nextUpdate = now + ESP_DATA_INTERVAL
-
+local function updateESPData(player, st, char, humanoid, dist, now)
+    -- re-resolve gui every 3s (text can change mid-game)
     local gui = st.gui
-    if not (gui and isAlive(gui)) then
+    local needGui = not (gui and isAlive(gui)) or (st.guiStamp and (now - st.guiStamp) > 3)
+    if needGui then
         gui = getTitlesGui(char)
         st.gui = gui
-    end
-    st.species = getSpecies(char, gui)
-    st.bloodline = getBloodline(char, gui)
-
-    st.spell = getAbilityEquipped(char)
-    st.spellText = st.spell
-
-    st.visible = true
-    if espFlags.visESP then
-        local casting = getCastingFolder(player)
-        if casting and isInvisible(casting) then st.visible = false end
+        st.guiStamp = now
+        st.casting = getCastingFolder(player)  -- refresh casting alongside gui
     end
 
-    if humanoid then
-        st.hp = floor(humanoid.Health)
-        st.maxHp = floor(humanoid.MaxHealth)
-        st.hpColor = healthColor(st.hp, st.maxHp)
-        st.hpPct = st.maxHp > 0 and math.clamp(st.hp / st.maxHp, 0, 1) or 0
+    if gui ~= st.lastGui or (gui and st.bloodline == nil) then
+        st.speciesText = getSpeciesText(char, gui)
+        st.bloodline   = getCharacterBloodline(char, gui, player)
+        st.lastGui     = gui
+        local class, clsColor = getClassColor(char)
+        st.speciesClass = class
+        st.speciesColor = clsColor
+    end
+
+    local casting = st.casting
+    if not casting and (flags.spellESP or flags.visESP) then
+        casting = getCastingFolder(player)
+        st.casting = casting
+    end
+
+    if flags.spellESP and casting then
+        local spells = findActiveSpells(casting)
+        st.spellText = spells and ("Casting : " .. spells) or nil
     else
-        st.hp = nil; st.maxHp = nil; st.hpColor = nil; st.hpPct = nil
+        st.spellText = nil
+    end
+
+    if flags.visESP and casting then
+        st.isInvis = isInvisible(casting)
+    else
+        st.isInvis = false
+    end
+
+    if humanoid and humanoid.MaxHealth > 0 then
+        st.hpText = floor(humanoid.Health) .. " / " .. floor(humanoid.MaxHealth)
+    else
+        st.hpText = nil
     end
 
     st.distText = tostring(floor(dist))
@@ -1034,905 +446,279 @@ local function showLine(st, key, d, text, color, x, y)
     if d.Text ~= text then d.Text = text end
     local px, py = floor(x + 0.5), floor(y + 0.5)
     if st.px[key] ~= px or st.py[key] ~= py then
-        d.Position = Vector2.new(px, py)
+        d.Position = Vector2_new(px, py)
         st.px[key] = px; st.py[key] = py
     end
     setVisible(d, true)
 end
 
-local function renderTotems()
-    local map = workspace:FindFirstChild("map")
-    local totemFolder = map and map:FindFirstChild("Totems")
-    if not totemFolder then
-        for part in pairs(totemObjects) do
-            removeTotemObjects(part)
-        end
+local function renderOnePlayer(player, st, obj, camPos, maxDist, now)
+    local char = resolveParts(st, player)
+    local hrp, humanoid = st.hrp, st.humanoid
+
+    if not (char and hrp and humanoid and humanoid.Health > 0) then
+        hidePlayer(player, st)
         return
     end
-    local activeTotems = {}
-    local camPos = Camera.CFrame.Position
-    for _, totem in ipairs(totemFolder:GetChildren()) do
-        if totem:IsA("BasePart") then
-            activeTotems[totem] = true
-            local objs = totemObjects[totem]
-            if not objs then objs = createTotemObjects(totem) end
-            objs.label.Color = COLORS.totem
-            local vp, onScreen = toScreen(totem.Position)
-            if onScreen and vp then
-                local dist = (camPos - totem.Position).Magnitude
-                objs.label.Text = string.format("Hollowed Totem (%d)", floor(dist))
-                objs.label.Position = vp - Vector2.new(0, 20)
-                objs.label.Visible = true
-            else
-                objs.label.Visible = false
-            end
-        end
-    end
-    for part in pairs(totemObjects) do
-        if not activeTotems[part] then
-            removeTotemObjects(part)
-        end
-    end
-end
 
-local function hideAllTotems()
-    local objs = totemObjects
-    for _, obj in pairs(objs) do
-        obj.label.Visible = false
+    local worldPos = hrp.Position
+    local dist = (camPos - worldPos).Magnitude
+    if dist > maxDist then
+        hidePlayer(player, st)
+        return
     end
-end
 
-local function applyHitbox(player)
-    if player == LocalPlayer or not player.Character then return end
-    local rootPart = player.Character:FindFirstChild("HumanoidRootPart")
-    local humanoid = player.Character:FindFirstChild("Humanoid")
-    if not (rootPart and humanoid and humanoid.Health > 0) then return end
+    local screenPos, onScreen = WorldToScreen(worldPos)
+    if not onScreen then
+        hidePlayer(player, st)
+        return
+    end
 
-    local box = rootPart:FindFirstChild("CustomHitbox")
-    if not box then
-        box = Instance.new("Part")
-        box.Name = "CustomHitbox"
-        box.Size = hitboxSize
-        box.Transparency = (hitboxShow and hitboxTransparency or 1)
-        box.Color = Color3.fromRGB(255, 0, 0)
-        box.CanCollide = false
-        box.CanTouch = true
-        box.CanQuery = true
-        box.Massless = true
-        pcall(function() box.CollisionGroup = "MegsHitboxGroup" end)
-        
-        local weld = Instance.new("WeldConstraint")
-        weld.Part0 = rootPart
-        weld.Part1 = box
-        weld.Parent = box
-        
-        box.CFrame = rootPart.CFrame
-        box.Parent = rootPart
+    st.hidden = false
+    st.lastSeen = now
+
+    updateESPData(player, st, char, humanoid, dist, now)
+
+    local rawHeight = clamp(1500 / max(dist, 1), 20, 250)
+    local boxHeight = floor(rawHeight / 4) * 4
+    local x = screenPos.X
+    local baseY = screenPos.Y - boxHeight * 0.5 - 18
+    local off = 0
+
+    if flags.species and st.speciesText then
+        local c = st.speciesColor or COLORS.species
+        showLine(st, "species", obj.species, st.speciesText, c, x, baseY + off); off += 15
+    else setVisible(obj.species, false) end
+
+    if flags.name then
+        showLine(st, "name", obj.name, player.Name, COLORS.name, x, baseY + off); off += 16
+    else setVisible(obj.name, false) end
+
+    if flags.bloodline and st.bloodline then
+        showLine(st, "bloodline", obj.bloodline, st.bloodline, COLORS.bloodline, x, baseY + off); off += 15
+    else setVisible(obj.bloodline, false) end
+
+    if flags.spellESP and st.spellText then
+        showLine(st, "spell", obj.spell, st.spellText, COLORS.spell, x, baseY + off); off += 15
+    else setVisible(obj.spell, false) end
+
+    -- Invisible line: only shows when target is invisible
+    if flags.visESP and st.isInvis then
+        showLine(st, "visible", obj.visible, "Invisible", COLORS.invisible, x, baseY + off)
+        off += 15
     else
-        box.Size = hitboxSize
-        box.Transparency = (hitboxShow and hitboxTransparency or 1)
+        setVisible(obj.visible, false)
     end
-end
 
-local function restoreAllHitboxes()
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer then
-            restoreHitbox(player)
-        end
-    end
-end
+    if flags.health and st.hpText then
+        showLine(st, "health", obj.health, "HP : " .. st.hpText, COLORS.health, x, baseY + off); off += 15
+    else setVisible(obj.health, false) end
 
-local function hookHitboxForPlayer(player)
-    if hitboxHookedChars[player.UserId] then return end
-    hitboxHookedChars[player.UserId] = true
-    local conn = player.CharacterAdded:Connect(function()
-        task.wait(0.5)
-        if hitboxEnabled then
-            applyHitbox(player)
-        end
-    end)
-    hitboxCharConns[player.UserId] = conn
-end
-
-task.spawn(function()
-    while keepAliveRunning do
-        task.wait(0.5)
-        if hitboxEnabled then
-            for _, player in ipairs(Players:GetPlayers()) do
-                if player ~= LocalPlayer and player.Character then
-                    hookHitboxForPlayer(player)
-                    applyHitbox(player)
-                end
-            end
-        end
-    end
-end)
-
-local CooldownOffEvent = nil
-do
-    local SpellEvent = ReplicatedStorage:FindFirstChild("SpellEvent")
-    local ServerEvents = SpellEvent and SpellEvent:FindFirstChild("ServerEvents")
-    CooldownOffEvent = ServerEvents and ServerEvents:FindFirstChild("CooldownOff")
-end
-
-local function fireCDList(list)
-    if not CooldownOffEvent then return end
-    if not hasFiresignal() then return end
-    local myEntry = getLivingEntry(LocalPlayer)
-    local casting = myEntry and myEntry:FindFirstChild("CastingSpells")
-    if not casting then return end
-
-    for _, abilityName in ipairs(list) do
-        local abilityBool = casting:FindFirstChild(abilityName)
-        if abilityBool and abilityBool:IsA("BoolValue") and abilityBool.Value == true then
-            pcall(function()
-                firesignal(CooldownOffEvent.OnClientEvent, abilityName)
-            end)
-        end
-    end
-end
-
-task.defer(function()
-    if CooldownOffEvent and not hasFiresignal() then
-        window:Notify({
-            title = "No Cooldown",
-            content = "This executor does not provide `firesignal`. No-Cooldown toggles will not function.",
-            duration = 10,
-        })
-    end
-end)
-
-if CooldownOffEvent then
-    task.spawn(function()
-        while keepAliveRunning do
-            task.wait(0.05)
-            if not (vampireCDEnabled or wolfCDEnabled or witchCDEnabled
-                or unstableCDEnabled or serumCDEnabled or soulbindCDEnabled or geminiCDEnabled
-                or expressionCDEnabled or ancientCDEnabled or darkCDEnabled or astralCDEnabled
-                or awakenedSoulbindCDEnabled or originalMagicCDEnabled or connectiveCDEnabled) then
-                continue
-            end
-            if not hasFiresignal() then continue end
-            if vampireCDEnabled then fireCDList(vampireCDList) end
-            if wolfCDEnabled    then fireCDList(wolfCDList)    end
-            if witchCDEnabled   then fireCDList(witchCDList)   end
-            if unstableCDEnabled then fireCDList(unstableCDList) end
-            if serumCDEnabled    then fireCDList(serumCDList)    end
-            if soulbindCDEnabled then fireCDList(soulbindCDList) end
-            if geminiCDEnabled   then fireCDList(geminiCDList)   end
-            if expressionCDEnabled       then fireCDList(expressionCDList)       end
-            if ancientCDEnabled          then fireCDList(ancientCDList)          end
-            if darkCDEnabled             then fireCDList(darkCDList)             end
-            if astralCDEnabled           then fireCDList(astralCDList)           end
-            if awakenedSoulbindCDEnabled then fireCDList(awakenedSoulbindCDList) end
-            if originalMagicCDEnabled    then fireCDList(originalMagicCDList)    end
-            if connectiveCDEnabled       then fireCDList(connectiveCDList)       end
-        end
-    end)
+    if flags.distance and st.distText then
+        showLine(st, "dist", obj.dist, st.distText, COLORS.distance, x, baseY + off); off += 15
+    else setVisible(obj.dist, false) end
 end
 
 local function renderLoop()
-    if not drawingAvailable then return end
-    local now = clock()
-    if not espFlags.enabled then
+    local now = tick()
+
+    if not flags.enabled then
         for player, obj in pairs(espObjects) do
-            hideESPObject(obj)
             local st = espState[player]
-            if st then st.hidden = true end
-        end
-        if espFlags.totemESP then
-            if (now - lastESPRender) >= ESP_RENDER_INTERVAL then
-                lastESPRender = now
-                pcall(renderTotems)
+            if not (st and st.hidden) then
+                hideESPObject(obj)
+                if st then st.hidden = true end
             end
-        else
-            hideAllTotems()
         end
         return
     end
+
     if (now - lastESPRender) < ESP_RENDER_INTERVAL then return end
     lastESPRender = now
 
-    local camPos = Camera.CFrame.Position
-    local maxDist = espFlags.maxDist
-    local snapshot = {}
+    local camPos  = Camera.CFrame.Position
+    local maxDist = flags.maxDist
+
     for player in pairs(trackedPlayers) do
-        if player.Parent == nil then
-            removeESP(player)
-        else
-            snapshot[#snapshot + 1] = player
+        local st = getState(player)
+        local obj = espObjects[player]
+        if not obj then
+            obj = createObjects(player)
         end
-    end
-
-    for _, player in ipairs(snapshot) do
-        if player.Parent ~= nil then
-            local st = getState(player)
-            local wasHidden = st.hidden
-            local char = resolveParts(st, player)
-            local hrp, humanoid = st.hrp, st.humanoid
-            if not (char and hrp and humanoid and humanoid.Health > 0) then
-                hidePlayer(player, st)
-            else
-                local worldPos = hrp.Position
-                local dist = (camPos - worldPos).Magnitude
-                if dist > maxDist then
-                    hidePlayer(player, st)
-                else
-                    local screenPos, onScreen = toScreen(worldPos)
-                    if not onScreen or not screenPos then
-                        hidePlayer(player, st)
-                    else
-                        local obj = espObjects[player]
-                        if not obj then obj = createObjects(player); wasHidden = true end
-                        updateESPData(player, st, char, humanoid, dist, now, wasHidden)
-                        st.hidden = false
-                        st.lastSeen = now
-                        local boxHeight = clamp(1500 / math.max(dist, 1), 20, 250)
-                        local x = screenPos.X
-                        local baseY = screenPos.Y - boxHeight * 0.5 - 18
-                        local off = 0
-
-                        pcall(function()
-                            if espFlags.name then
-                                showLine(st, "name", obj.name, player.Name, COLORS.name, x, baseY + off)
-                                off += 16
-                            else setVisible(obj.name, false) end
-
-                            if espFlags.species and st.species then
-                                showLine(st, "species", obj.species, st.species, COLORS.species, x, baseY + off)
-                                off += 15
-                            else setVisible(obj.species, false) end
-                            if espFlags.spellESP and st.spellText then
-                                showLine(st, "spell", obj.spell, st.spellText, COLORS.spell, x, baseY + off)
-                                off += 15
-                            else setVisible(obj.spell, false) end
-                            if espFlags.visESP and st.visible == false then
-                                showLine(st, "visible", obj.visible, "Invisible",
-                                    Color3.fromRGB(0xFF, 0x50, 0x50), x, baseY + off)
-                                off += 15
-                            else setVisible(obj.visible, false) end
-                            if espFlags.bloodline and st.bloodline then
-                                showLine(st, "bloodline", obj.bloodline, st.bloodline, COLORS.bloodline, x, baseY + off)
-                                off += 15
-                            else setVisible(obj.bloodline, false) end
-                            if espFlags.health and st.hpPct then
-                                local barW = 70
-                                local bx = floor(x - barW / 2 + 0.5)
-                                local by = floor(baseY + off + 0.5)
-                                local fillW = math.max(1, barW * st.hpPct)
-                                obj.hpOutline.From = Vector2.new(bx, by)
-                                obj.hpOutline.To = Vector2.new(bx + barW, by)
-                                setVisible(obj.hpOutline, true)
-                                obj.hpBg.From = Vector2.new(bx, by)
-                                obj.hpBg.To = Vector2.new(bx + barW, by)
-                                setVisible(obj.hpBg, true)
-                                obj.hpFill.From = Vector2.new(bx, by)
-                                obj.hpFill.To = Vector2.new(bx + fillW, by)
-                                obj.hpFill.Color = st.hpColor or Color3.fromRGB(0xFF, 0xFF, 0xFF)
-                                setVisible(obj.hpFill, true)
-                                off += 8
-                            else
-                                setVisible(obj.hpOutline, false)
-                                setVisible(obj.hpBg, false)
-                                setVisible(obj.hpFill, false)
-                            end
-                            if espFlags.distance and st.distText then
-                                showLine(st, "dist", obj.dist, st.distText, COLORS.dist, x, baseY + off)
-                                off += 15
-                            else setVisible(obj.dist, false) end
-                        end)
-                    end
-                end
-            end
-        end
-    end
-
-    if espFlags.totemESP then
-        pcall(renderTotems)
-    else
-        hideAllTotems()
+        renderOnePlayer(player, st, obj, camPos, maxDist, now)
     end
 end
 
-if drawingAvailable then
-    local ok = pcall(function()
-        _G.__megs_esp_conn = RunService.RenderStepped:Connect(function()
-            pcall(renderLoop)
-        end)
-        track(_G.__megs_esp_conn)
-    end)
-    if not ok then
-        local fallbackRunning = true
-        local fakeConn = { Disconnect = function() fallbackRunning = false end }
-        connections[#connections + 1] = fakeConn
-        _G.__megs_esp_conn = fakeConn
-        task.spawn(function()
-            while fallbackRunning and keepAliveRunning do
-                task.wait()
-                pcall(renderLoop)
-            end
-        end)
-    end
-end
-
-local function disableFPSBoost()
+local renderOK = pcall(function()
+    RunService.RenderStepped:Connect(function() pcall(renderLoop) end)
+end)
+if not renderOK then
     task.spawn(function()
-        local count = 0
-        for obj, state in pairs(originalParticleStates) do
-            if obj and obj.Parent then
-                obj.Enabled = state
-                count += 1
-                if count % 500 == 0 then task.wait() end
-            end
-        end
-        originalParticleStates = {}
-    end)
-    pcall(function()
-        settings().Rendering.QualityLevel = originalLighting.QualityLevel or Enum.QualityLevel.Level10
+        while true do task.wait(); pcall(renderLoop) end
     end)
 end
 
-local function cleanupParticleRefs()
-    for obj in pairs(originalParticleStates) do
-        if not obj or not obj.Parent then
-            originalParticleStates[obj] = nil
+local LOOP_STOP = false
+
+local function safeAddTab(name, fn)
+    for attempt = 1, 25 do
+        local addTab = rawget(UI, "AddTab")
+        if type(addTab) == "function" then
+            local ok, err = pcall(addTab, name, fn)
+            if ok then print(">>> registered tab '" .. name .. "'"); return true end
+            print(">>> attempt " .. attempt .. " failed: " .. tostring(err))
         end
+        task.wait(0.2)
     end
+    print(">>> gave up registering '" .. name .. "'")
+    return false
 end
 
-local function fullUnload()
-    keepAliveRunning = false
+safeAddTab("^.^meg nfc", function(tab)
+    local esp = tab:Section("ESP", "Left")
 
-    hitboxEnabled = false
-    restoreAllHitboxes()
-    for _, conn in pairs(hitboxCharConns) do
-        pcall(function() conn:Disconnect() end)
-    end
-    hitboxCharConns = {}
-    hitboxHookedChars = {}
-    vampireCDEnabled = false
-    wolfCDEnabled    = false
-    witchCDEnabled   = false
-    unstableCDEnabled = false
-    serumCDEnabled    = false
-    soulbindCDEnabled = false
-    geminiCDEnabled   = false
-    expressionCDEnabled      = false
-    ancientCDEnabled         = false
-    darkCDEnabled            = false
-    astralCDEnabled          = false
-    awakenedSoulbindCDEnabled = false
-    originalMagicCDEnabled   = false
-    connectiveCDEnabled      = false
+    esp:Toggle("nf_enabled", "Enable ESP", false, function(on) flags.enabled = on; scheduleSave() end)
+    esp:Toggle("nf_species", "Species", flags.species, function(on) flags.species = on; scheduleSave() end)
+    esp:Toggle("nf_name", "Username", flags.name, function(on) flags.name = on; scheduleSave() end)
+    esp:Toggle("nf_bloodline", "Bloodline", flags.bloodline, function(on) flags.bloodline = on; scheduleSave() end)
+    esp:Tip("Shows the character's bloodline in blue")
+    esp:Toggle("nf_health", "Health", flags.health, function(on) flags.health = on; scheduleSave() end)
+    esp:Toggle("nf_distance", "Distance", flags.distance, function(on) flags.distance = on; scheduleSave() end)
+    esp:Toggle("nf_spell", "Active Spells (Ictus / Motus)", flags.spellESP, function(on) flags.spellESP = on; scheduleSave() end)
+    esp:Toggle("nf_vis", "Show Invisible", flags.visESP, function(on) flags.visESP = on; scheduleSave() end)
+    esp:Tip("Shows 'Invisible' in red only for players using Invisique")
+    esp:SliderInt("nf_maxdist", "Max Distance", 100, 10000, flags.maxDist, function(v) flags.maxDist = v; scheduleSave() end)
 
-    autoStruggleEnabled = false
-    lastProcessedText = ""
+    local actions = tab:Section("Actions", "Left")
+    actions:Button("Reset Defaults", function()
+        flags.name = true; flags.bloodline = true; flags.species = true
+        flags.health = true; flags.distance = true
+        flags.spellESP = true; flags.visESP = true; flags.maxDist = 2000
+        for _, st in pairs(espState) do st.px = {}; st.py = {} end
+        scheduleSave()
+        notify("Config reset to defaults", "^.^meg nfc", 3)
+    end)
+    actions:Button("Save Now", function()
+        saveConfig()
+        notify("Config saved", "^.^meg nfc", 2)
+    end)
 
-    staffNotifyEnabled = false
-    if staffOnJoinConnection then
-        disconnectTracked(staffOnJoinConnection)
-        staffOnJoinConnection = nil
-    end
+    local info = tab:Section("Select Player", "Left")
 
-    if noclipCharConn then
-        pcall(function() noclipCharConn:Disconnect() end)
-        noclipCharConn = nil
-    end
-
-    noclipEnabled = false
-    if LocalPlayer.Character then
-        restoreCollisions(LocalPlayer.Character)
-    end
-
-    if fpsBoostEnabled then
-        fpsBoostEnabled = false
-        disableFPSBoost()
-    end
-    currentPresetName = nil
-    applyWeatherFlags(originalWeather.rain, originalWeather.redStorm)
-    restoreLightingAndAtmosphere()
-    pcall(function() Lighting.GlobalShadows = originalLighting.GlobalShadows end)
-    for _, conn in ipairs(connections) do
-        pcall(function() conn:Disconnect() end)
-    end
-    connections = {}
-    removeEveryObject()
-    trackedPlayers = {}
-    espState = {}
-    _G.__megs_esp_conn = nil
-    _G.__megs_esp_cleanup = nil
-    pcall(function() window:Unload() end)
-end
-
-local combat = window:CreateTab({ name = "Combat" })
-
-combat:CreateSection({ name = "Hitbox Expander" })
-
-combat:CreateToggle({
-    name = "Enable Hitbox Expander",
-    flag = "HitboxEnabled",
-    value = false,
-    callback = function(v)
-        hitboxEnabled = v
-        if v then
-            for _, player in ipairs(Players:GetPlayers()) do
-                if player ~= LocalPlayer then
-                    hookHitboxForPlayer(player)
-                    applyHitbox(player)
-                end
-            end
-        else
-            restoreAllHitboxes()
-        end
-    end,
-})
-
-combat:CreateSlider({
-    name = "Hitbox Size",
-    flag = "HitboxSize",
-    range = { 2, 60 },
-    increment = 1,
-    value = 10,
-    callback = function(v)
-        hitboxSize = Vector3.new(v, v, v)
-        if hitboxEnabled then
-            for _, player in ipairs(Players:GetPlayers()) do
-                if player ~= LocalPlayer then
-                    applyHitbox(player)
-                end
+    local function buildPlayerList()
+        local list = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer then
+                local dn = p.DisplayName or p.Name
+                list[#list+1] = dn .. " (" .. p.Name .. ")"
             end
         end
-    end,
-})
+        table.sort(list)
+        return list
+    end
 
-combat:CreateToggle({
-    name = "Show Hitbox",
-    flag = "HitboxShow",
-    value = false,
-    callback = function(v)
-        hitboxShow = v
-        hitboxTransparency = v and 0.7 or 1
-        if hitboxEnabled then
-            for _, player in ipairs(Players:GetPlayers()) do
-                if player ~= LocalPlayer then
-                    applyHitbox(player)
-                end
-            end
+    local function findPlayerByEntry(entry)
+        if not entry then return nil end
+        local username = entry:match("%(([^%(%)]+)%)%s*$")
+        if not username then return nil end
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.Name == username then return p end
         end
-    end,
-})
+        return nil
+    end
 
-combat:CreateButton({
-    name = "Restore All Hitboxes",
-    callback = function()
-        hitboxEnabled = false
-        pcall(function()
-            if window.Flags then window.Flags.HitboxEnabled = false end
-        end)
-        restoreAllHitboxes()
-        NotifySafe({ title = "Hitbox Expander", content = "Restored all hitboxes.", duration = 3 })
-    end,
-})
+    local playerList = buildPlayerList()
+    if #playerList == 0 then playerList = { "(no other players)" } end
 
-combat:CreateSection({ name = "No Cooldown Base Kit" })
+    local dropdown = info:Combo(
+        "nf_selected_player", "Player", playerList, 0,
+        function(idx, entry) selectedPlayer = findPlayerByEntry(entry) end
+    )
+    selectedPlayer = findPlayerByEntry(playerList[1])
 
-combat:CreateToggle({
-    name = "Vampire Kit", flag = "VampireCD", value = false,
-    callback = function(v) vampireCDEnabled = v end,
-})
-combat:CreateToggle({
-    name = "Wolf Kit", flag = "WolfCD", value = false,
-    callback = function(v) wolfCDEnabled = v end,
-})
-combat:CreateToggle({
-    name = "Witch Kit", flag = "WitchCD", value = false,
-    callback = function(v) witchCDEnabled = v end,
-})
+    local details = tab:Section("Details", "Right")
+    details:InputText("nf_det_user",      "Username",   "-")
+    details:InputText("nf_det_species",   "Species",    "-")
+    details:InputText("nf_det_bloodline", "Bloodline",  "-")
+    details:InputText("nf_det_health",    "Health",     "-")
+    details:InputText("nf_det_soul",      "Soul Link",  "-")
 
-combat:CreateSection({ name = "No Cooldown Coins Characters" })
-
-combat:CreateToggle({
-    name = "Unstable", flag = "UnstableCD", value = false,
-    callback = function(v) unstableCDEnabled = v end,
-})
-combat:CreateToggle({
-    name = "Serum", flag = "SerumCD", value = false,
-    callback = function(v) serumCDEnabled = v end,
-})
-combat:CreateToggle({
-    name = "Soulbind", flag = "SoulbindCD", value = false,
-    callback = function(v) soulbindCDEnabled = v end,
-})
-combat:CreateToggle({
-    name = "Gemini", flag = "GeminiCD", value = false,
-    callback = function(v) geminiCDEnabled = v end,
-})
-
-combat:CreateSection({ name = "No Cooldown Gamepasses" })
-
-combat:CreateToggle({
-    name = "Expression", flag = "ExpressionCD", value = false,
-    callback = function(v) expressionCDEnabled = v end,
-})
-combat:CreateToggle({
-    name = "Ancient", flag = "AncientCD", value = false,
-    callback = function(v) ancientCDEnabled = v end,
-})
-combat:CreateToggle({
-    name = "Dark", flag = "DarkCD", value = false,
-    callback = function(v) darkCDEnabled = v end,
-})
-combat:CreateToggle({
-    name = "Astral", flag = "AstralCD", value = false,
-    callback = function(v) astralCDEnabled = v end,
-})
-combat:CreateToggle({
-    name = "Awakened Soulbind", flag = "AwakenedSoulbindCD", value = false,
-    callback = function(v) awakenedSoulbindCDEnabled = v end,
-})
-combat:CreateToggle({
-    name = "Original Magic", flag = "OriginalMagicCD", value = false,
-    callback = function(v) originalMagicCDEnabled = v end,
-})
-combat:CreateToggle({
-    name = "Connective", flag = "ConnectiveCD", value = false,
-    callback = function(v) connectiveCDEnabled = v end,
-})
-
-local esp = window:CreateTab({ name = "ESP" })
-esp:CreateSection({ name = "Players" })
-
-esp:CreateToggle({
-    name = "Enable ESP", flag = "ESPEnabled", value = espFlags.enabled,
-    callback = function(v)
-        if v and not drawingAvailable then
-            NotifySafe({ title = "ESP", content = "Drawing API unavailable in this executor." })
-            espFlags.enabled = false
-            return
-        end
-        espFlags.enabled = v
-    end,
-})
-esp:CreateToggle({ name = "Username", flag = "ESPName", value = espFlags.name,
-    callback = function(v) espFlags.name = v end })
-esp:CreateToggle({ name = "Species", flag = "ESPSpecies", value = espFlags.species,
-    callback = function(v) espFlags.species = v end })
-esp:CreateToggle({ name = "Bloodline", flag = "ESPBloodline", value = espFlags.bloodline,
-    callback = function(v) espFlags.bloodline = v end })
-esp:CreateToggle({ name = "Health Bar", flag = "ESPHealth", value = espFlags.health,
-    callback = function(v) espFlags.health = v end })
-esp:CreateToggle({ name = "Distance", flag = "ESPDistance", value = espFlags.distance,
-    callback = function(v) espFlags.distance = v end })
-esp:CreateToggle({ name = "Active Ability", flag = "ESPSpell", value = espFlags.spellESP,
-    callback = function(v) espFlags.spellESP = v end })
-esp:CreateToggle({ name = "Show When Invisible", flag = "ESPVisible", value = espFlags.visESP,
-    callback = function(v) espFlags.visESP = v end })
-esp:CreateToggle({ name = "Show Hollowed Totem", flag = "TotemESP", value = espFlags.totemESP,
-    callback = function(v) espFlags.totemESP = v end })
-
-esp:CreateSlider({
-    name = "Max Distance", flag = "ESPMaxDist",
-    range = { 100, 10000 }, increment = 100, value = espFlags.maxDist,
-    callback = function(v) espFlags.maxDist = v end,
-})
-
-esp:CreateSection({ name = "Colors" })
-
-esp:CreateColorPicker({ name = "Username Color", color = COLORS.name, flag = "ColorName",
-    callback = function(c) COLORS.name = c end })
-esp:CreateColorPicker({ name = "Species Color", color = COLORS.species, flag = "ColorSpecies",
-    callback = function(c) COLORS.species = c end })
-esp:CreateColorPicker({ name = "Bloodline Color", color = COLORS.bloodline, flag = "ColorBloodline",
-    callback = function(c) COLORS.bloodline = c end })
-esp:CreateColorPicker({ name = "Distance Color", color = COLORS.dist, flag = "ColorDistance",
-    callback = function(c) COLORS.dist = c end })
-esp:CreateColorPicker({ name = "Spell Color", color = COLORS.spell, flag = "ColorSpell",
-    callback = function(c) COLORS.spell = c end })
-
-esp:CreateButton({
-    name = "Reset All Colors",
-    callback = function()
-        COLORS.name      = Color3.fromRGB(0xFF, 0xFF, 0xFF)
-        COLORS.species   = Color3.fromRGB(0xB4, 0x8C, 0xFF)
-        COLORS.bloodline = Color3.fromRGB(0x30, 0x54, 0x9C)
-        COLORS.dist      = Color3.fromRGB(0xFF, 0xFF, 0xFF)
-        COLORS.spell     = Color3.fromRGB(0x06, 0x77, 0xA5)
-        task.spawn(function()
-            pcall(function() window.Flags.ColorName = COLORS.name end)
-            pcall(function() window.Flags.ColorSpecies = COLORS.species end)
-            pcall(function() window.Flags.ColorBloodline = COLORS.bloodline end)
-            pcall(function() window.Flags.ColorDistance = COLORS.dist end)
-            pcall(function() window.Flags.ColorSpell = COLORS.spell end)
-        end)
-        NotifySafe({ title = "ESP", content = "Colors reset to defaults." })
-    end,
-})
-
-local assistance = window:CreateTab({ name = "Assistance" })
-
-assistance:CreateSection({ name = "Location Teleports" })
-
-assistance:CreateDropdown({
-    name = "Select Location",
-    options = {
-        "Cure Tomb", "Witch House", "Qetsiyah Cabin",
-        "Church", "Weapon Shop", "Grill",
-        "Voodoo Shop", "Under Cemetery", "Secret TV Room",
-    },
-    flag = "TPLocation",
-    callback = function(selected) selectedLocation = selected end,
-})
-
-assistance:CreateButton({
-    name = "Teleport to Location",
-    callback = function()
-        if not selectedLocation then
-            NotifySafe({ title = "Teleport", content = "Please select a location first.", duration = 3 })
-            return
-        end
-        local targetPos = MapLocations[selectedLocation]
-        if targetPos then
-            safeTeleport(targetPos, selectedLocation)
-        else
-            NotifySafe({ title = "Teleport", content = "Location not in database.", duration = 3 })
-        end
-    end,
-})
-
-assistance:CreateSection({ name = "Movement" })
-
-assistance:CreateToggle({
-    name = "NoClip", flag = "NoclipEnabled", value = false,
-    callback = function(v)
-        noclipEnabled = v
-        local char = LocalPlayer.Character
-        if v then
-            if char then saveCollisions(char) end
-            NotifySafe({ title = "Movement", content = "NoClip Enabled", duration = 3 })
-        else
-            if char then restoreCollisions(char) end
-            NotifySafe({ title = "Movement", content = "NoClip Disabled", duration = 3 })
-        end
-    end,
-})
-
-assistance:CreateSection({ name = "Mora Miserium challenge" })
-
-assistance:CreateToggle({
-    name = "Auto Struggle Mini-Game", flag = "AutoStruggle", value = false,
-    callback = function(v)
-        autoStruggleEnabled = v
-        if not v then
-            lastProcessedText = ""
-        else
-            nonAsciiWarned = false
-        end
-        NotifySafe({
-            title = "Mora Miserium",
-            content = v and "Auto-Struggle Enabled" or "Auto-Struggle Disabled",
-            duration = 3,
-        })
-    end,
-})
-
-assistance:CreateSection({ name = "Weather" })
-
-assistance:CreateDropdown({
-    name = "Weather Preset",
-    options = { "day", "sundown", "night", "dawn", "foggy", "rain", "red_storm" },
-    flag = "WeatherPreset",
-    value = currentPresetName or "day",
-    callback = function(selected)
-        applyPreset(selected)
-        NotifySafe({ title = "Weather", content = "Applied: " .. selected, duration = 2 })
-    end,
-})
-
-assistance:CreateToggle({
-    name = "Global Shadows", flag = "WeatherGlobalShadows",
-    value = originalLighting.GlobalShadows,
-    callback = function(v) pcall(function() Lighting.GlobalShadows = v end) end,
-})
-
-assistance:CreateButton({
-    name = "Restore Original Weather",
-    callback = function()
-        currentPresetName = nil
-        applyWeatherFlags(originalWeather.rain, originalWeather.redStorm)
-        restoreLightingAndAtmosphere()
-        pcall(function() Lighting.GlobalShadows = originalLighting.GlobalShadows end)
-        NotifySafe({ title = "Weather", content = "Restored original weather + lighting.", duration = 3 })
-    end,
-})
-
-assistance:CreateSection({ name = "Performance" })
-
-assistance:CreateToggle({
-    name = "Enable FPS Boost", flag = "FPSBoostEnabled", value = false,
-    callback = function(v)
-        fpsBoostEnabled = v
-        if v then
-            originalParticleStates = {}
-            cleanupParticleRefs()
-            task.spawn(function()
-                local count = 0
-                for _, obj in ipairs(workspace:GetDescendants()) do
-                    if obj:IsA("ParticleEmitter")
-                        or obj:IsA("Trail")
-                        or obj:IsA("Smoke")
-                        or obj:IsA("Fire")
-                        or obj:IsA("Sparkles")
-                        or obj:IsA("Beam") then
-                        originalParticleStates[obj] = obj.Enabled
-                        obj.Enabled = false
-                        count += 1
-                        if count % 500 == 0 then task.wait() end
+    local lastListKey = ""
+    task.spawn(function()
+        while not LOOP_STOP do
+            task.wait(1)
+            local newList = buildPlayerList()
+            if #newList == 0 then newList = { "(no other players)" } end
+            local listKey = table.concat(newList, "\0")
+            if listKey ~= lastListKey then
+                lastListKey = listKey
+                local newIndex = 0
+                if selectedPlayer then
+                    for i, entry in ipairs(newList) do
+                        if findPlayerByEntry(entry) == selectedPlayer then
+                            newIndex = i - 1; break
+                        end
                     end
                 end
-            end)
+                pcall(function()
+                    dropdown:Clear()
+                    for _, name in ipairs(newList) do dropdown:Add(name) end
+                    dropdown:SetValue(newIndex)
+                end)
+                if not selectedPlayer then selectedPlayer = findPlayerByEntry(newList[1]) end
+            end
+        end
+    end)
+
+    local lastDetails = {}
+    local function setDetail(key, value)
+        if lastDetails[key] ~= value then
+            lastDetails[key] = value
             pcall(function()
-                settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+                local setValue = rawget(UI, "SetValue")
+                if type(setValue) == "function" then setValue(key, value) end
             end)
-            NotifySafe({ title = "FPS Booster", content = "Boost Enabled", duration = 4 })
-        else
-            disableFPSBoost()
-            NotifySafe({ title = "FPS Booster", content = "Boost Disabled", duration = 4 })
         end
-    end,
-})
-
-task.spawn(function()
-    while keepAliveRunning do
-        task.wait(30)
-        if fpsBoostEnabled then cleanupParticleRefs() end
     end
+
+    task.spawn(function()
+        while not LOOP_STOP do
+            task.wait(0.5)
+            local sel = selectedPlayer
+            if not sel then
+                setDetail("nf_det_user", "-")
+                setDetail("nf_det_species", "-")
+                setDetail("nf_det_bloodline", "-")
+                setDetail("nf_det_health", "-")
+                setDetail("nf_det_soul", "-")
+                task.wait(0.5)
+            else
+                local char = sel.Character
+                local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+                local gui = char and getTitlesGui(char)
+                local dn = sel.DisplayName or sel.Name
+                setDetail("nf_det_user", dn .. " (" .. sel.Name .. ")")
+                setDetail("nf_det_species", (char and getSpeciesText(char, gui)) or "?")
+                setDetail("nf_det_bloodline", (char and getCharacterBloodline(char, gui, sel)) or "?")
+                local hpStr = "?"
+                if humanoid and humanoid.MaxHealth > 0 then
+                    hpStr = floor(humanoid.Health) .. " / " .. floor(humanoid.MaxHealth)
+                end
+                setDetail("nf_det_health", hpStr)
+                if isSoulLinked(sel) then
+                    local linked = {}
+                    for _, p in ipairs(Players:GetPlayers()) do
+                        if p ~= LocalPlayer and isSoulLinked(p) then linked[#linked+1] = p end
+                    end
+                    local partner = findSoulPartner(sel, linked)
+                    if partner then
+                        local pdn = partner.DisplayName or partner.Name
+                        setDetail("nf_det_soul", pdn .. " (" .. partner.Name .. ")")
+                    else setDetail("nf_det_soul", "Yes") end
+                else setDetail("nf_det_soul", "") end
+            end
+        end
+    end)
 end)
 
-local settingsTab = window:CreateTab({ name = "Settings" })
-
-settingsTab:CreateSection({ name = "Staff Monitor" })
-
-settingsTab:CreateToggle({
-    name = "Notify on Staff Join", flag = "StaffNotify", value = false,
-    callback = onStaffToggleChanged,
-})
-
-settingsTab:CreateButton({
-    name = "List Current Staff in Server",
-    callback = function()
-        local entries = {}
-        local staffCount = 0
-
-        for _, p in ipairs(Players:GetPlayers()) do
-            local ok, rank = pcall(function() return p:GetRankInGroup(STAFF_GROUP_ID) end)
-            if ok and rank >= 2 then
-                local ok2, role = pcall(function() return p:GetRoleInGroup(STAFF_GROUP_ID) end)
-                local isStaff = rank >= STAFF_RANK_THRESHOLD
-                entries[#entries+1] = {
-                    displayName = p.DisplayName,
-                    username    = p.Name,
-                    rank        = rank,
-                    role        = ok2 and role or "Unknown",
-                    isStaff     = isStaff,
-                }
-                if isStaff then staffCount += 1 end
-            end
-        end
-
-        if #entries == 0 then
-            NotifySafe({ title = "Staff Monitor", content = "No staff in server currently.", duration = 4 })
-            return
-        end
-
-        table.sort(entries, function(a, b) return a.rank > b.rank end)
-
-        local header
-        if staffCount == 0 then
-            header = "Staff in server: 0 (" .. #entries .. " below-threshold member(s) present)"
-        else
-            header = "Staff in server: " .. staffCount
-        end
-
-        local lines = { header, "" }
-        for _, e in ipairs(entries) do
-            local marker = e.isStaff and "★" or "·"
-            lines[#lines+1] = string.format("%s %s — Rank %d: %s",
-                marker, e.displayName, e.rank, e.role)
-        end
-
-        NotifySafe({ title = "Staff Monitor", content = table.concat(lines, "\n"), duration = 12 })
-    end,
-})
-
-settingsTab:CreateSection({ name = "Appearance" })
-
-settingsTab:CreateDropdown({
-    name = "Theme",
-    options = { "default", "cobalt", "ember", "amethyst", "frost", "rose" },
-    value = (window.Flags and window.Flags.Theme) or "cobalt",
-    flag = "Theme",
-    callback = function(selected)
-        pcall(function() window:ChangeTheme(selected) end)
-    end,
-})
-
-settingsTab:CreateSection({ name = "Server" })
-
-settingsTab:CreateButton({
-    name = "Rejoin Server",
-    callback = function()
-        game:GetService("TeleportService"):TeleportToPlaceInstance(
-            game.PlaceId, game.JobId, LocalPlayer
-        )
-    end,
-})
-
-settingsTab:CreateButton({
-    name = "Join Another Server",
-    callback = function()
-        local TeleportService = game:GetService("TeleportService")
-        local HttpService = game:GetService("HttpService")
-        local ok, servers = pcall(function()
-            return HttpService:JSONDecode(
-                game:HttpGet(
-                    "https://games.roblox.com/v1/games/" ..
-                    game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
-                )
-            )
-        end)
-        if not ok or not servers or not servers.data then
-            NotifySafe({ title = "Server Hop", content = "Failed to fetch server list." })
-            return
-        end
-        local currentJob = game.JobId
-        local target = nil
-        for _, server in ipairs(servers.data) do
-            if server.playing < server.maxPlayers and server.id ~= currentJob then
-                target = server.id; break
-            end
-        end
-        if target then
-            TeleportService:TeleportToPlaceInstance(game.PlaceId, target, LocalPlayer)
-        else
-            NotifySafe({ title = "Server Hop", content = "No available servers found." })
-        end
-    end,
-})
-
-settingsTab:CreateSection({ name = "Script" })
-
-settingsTab:CreateButton({
-    name = "Eject Script",
-    callback = function()
-        fullUnload()
-    end,
-})
-
-task.defer(function()
-    syncFlagsFromRayfield()
-    if hitboxEnabled then
-        for _, player in ipairs(Players:GetPlayers()) do
-            if player ~= LocalPlayer and player.Character then
-                hookHitboxForPlayer(player)
-                applyHitbox(player)
-            end
-        end
-    end
-    if noclipEnabled and LocalPlayer.Character then
-        saveCollisions(LocalPlayer.Character)
-    end
-end)
-
-window:Notify({
-    title = "Loaded Megs Gui",
-    content = "Script loaded successfully!",
-    duration = 8,
-})
-
-if bypassRan then
-    window:Notify({
-        title = "Auto Bypass Enabled",
-        content = "Auto bypass active!",
-        duration = 8,
-    })
-end
+pcall(function() notify("^.^meg nfc loaded", "^.^meg nfc", 3) end)
