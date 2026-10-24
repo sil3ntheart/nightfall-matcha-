@@ -316,9 +316,7 @@ local function getClassColor(character)
     return nil, nil
 end
 
--- [FIX 1] Guard against nil casting
 local function findActiveSpells(casting)
-    if not casting then return nil end
     local active = {}
     for _, spellName in ipairs(WATCHED_SPELLS) do
         local flag = casting:FindFirstChild(spellName)
@@ -375,7 +373,6 @@ local function hidePlayer(player, st)
     st.hidden = true
 end
 
--- [FIX 2] Removed duplicate st.casting assignment (now owned by updateESPData)
 local function resolveParts(st, player)
     local char = player.Character
     if not char then
@@ -390,6 +387,7 @@ local function resolveParts(st, player)
         st.speciesText = nil; st.bloodline = nil; st.speciesColor = nil
         st.isInvis = nil; st.spellText = nil; st.hpText = nil
         st.dataStamp = nil
+        st.casting = getCastingFolder(player)
     end
     if not st.hrp then st.hrp = char:FindFirstChild("HumanoidRootPart") end
     if not st.humanoid then st.humanoid = char:FindFirstChildOfClass("Humanoid") end
@@ -398,16 +396,9 @@ end
 
 local DATA_REFRESH_INTERVAL = 0.25
 
--- [FIX 3] HP moved outside the throttle so damage reflects every frame
 local function updateESPData(player, st, char, humanoid, dist, now)
+    -- Distance is cheap, so keep it current; throttle more expensive status/UI lookups.
     st.distText = tostring(floor(dist))
-
-    if humanoid and humanoid.MaxHealth > 0 then
-        st.hpText = floor(humanoid.Health) .. " / " .. floor(humanoid.MaxHealth)
-    else
-        st.hpText = nil
-    end
-
     if st.dataStamp and (now - st.dataStamp) < DATA_REFRESH_INTERVAL then
         return
     end
@@ -439,7 +430,8 @@ local function updateESPData(player, st, char, humanoid, dist, now)
     end
 
     if flags.spellESP and casting then
-        st.spellText = findActiveSpells(casting) and ("Casting : " .. findActiveSpells(casting)) or nil
+        local spells = findActiveSpells(casting)
+        st.spellText = spells and ("Casting : " .. spells) or nil
     else
         st.spellText = nil
     end
@@ -449,6 +441,13 @@ local function updateESPData(player, st, char, humanoid, dist, now)
     else
         st.isInvis = false
     end
+
+    if humanoid and humanoid.MaxHealth > 0 then
+        st.hpText = floor(humanoid.Health) .. " / " .. floor(humanoid.MaxHealth)
+    else
+        st.hpText = nil
+    end
+
 end
 
 local function showLine(st, key, d, text, color, x, y)
@@ -568,7 +567,7 @@ if not renderOK then
     end)
 end
 
--- [FIX 4] Removed LOOP_STOP (was never set to true, dead code)
+local LOOP_STOP = false
 
 local function safeAddTab(name, fn)
     for attempt = 1, 25 do
@@ -655,7 +654,7 @@ safeAddTab("^.^meg nfc", function(tab)
 
     local lastListKey = ""
     task.spawn(function()
-        while true do
+        while not LOOP_STOP do
             task.wait(1)
             local newList = buildPlayerList()
             if #newList == 0 then newList = { "(no other players)" } end
@@ -692,14 +691,9 @@ safeAddTab("^.^meg nfc", function(tab)
     end
 
     task.spawn(function()
-        while true do
+        while not LOOP_STOP do
             task.wait(0.5)
             local sel = selectedPlayer
-            -- [FIX 5] Clear stale selectedPlayer (left the game)
-            if sel and sel.Parent == nil then
-                selectedPlayer = nil
-                sel = nil
-            end
             if not sel then
                 setDetail("nf_det_user", "-")
                 setDetail("nf_det_species", "-")
