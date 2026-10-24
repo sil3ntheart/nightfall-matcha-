@@ -355,7 +355,7 @@ local function findSoulPartner(player, linkedList)
     return nil
 end
 
-local ESP_RENDER_INTERVAL = 1 / 60
+local ESP_RENDER_INTERVAL = 1 / 30
 local lastESPRender       = 0
 
 local function setVisible(obj, state)
@@ -386,6 +386,7 @@ local function resolveParts(st, player)
         st.casting = nil; st.guiStamp = nil; st.lastGui = nil
         st.speciesText = nil; st.bloodline = nil; st.speciesColor = nil
         st.isInvis = nil; st.spellText = nil; st.hpText = nil
+        st.dataStamp = nil
         st.casting = getCastingFolder(player)
     end
     if not st.hrp then st.hrp = char:FindFirstChild("HumanoidRootPart") end
@@ -393,7 +394,16 @@ local function resolveParts(st, player)
     return char
 end
 
+local DATA_REFRESH_INTERVAL = 0.25
+
 local function updateESPData(player, st, char, humanoid, dist, now)
+    -- Distance is cheap, so keep it current; throttle more expensive status/UI lookups.
+    st.distText = tostring(floor(dist))
+    if st.dataStamp and (now - st.dataStamp) < DATA_REFRESH_INTERVAL then
+        return
+    end
+    st.dataStamp = now
+
     -- re-resolve gui every 3s (text can change mid-game)
     local gui = st.gui
     local needGui = not (gui and isAlive(gui)) or (st.guiStamp and (now - st.guiStamp) > 3)
@@ -438,7 +448,6 @@ local function updateESPData(player, st, char, humanoid, dist, now)
         st.hpText = nil
     end
 
-    st.distText = tostring(floor(dist))
 end
 
 local function showLine(st, key, d, text, color, x, y)
