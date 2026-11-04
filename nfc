@@ -1,8 +1,7 @@
 -- ============================================================
--- ^.^meg nfc -- ESP (patched)
+-- ^.^meg nfc -- ESP (patched, v3)
 -- ============================================================
 
--- Re-execution cleanup: tear down the previous run before starting a new one
 local env = (getgenv and getgenv()) or _G
 if env.__MEG_NFC_CLEANUP then pcall(env.__MEG_NFC_CLEANUP) end
 
@@ -53,23 +52,20 @@ local trackedCount   = 0
 local espObjects     = {}
 local espState       = {}
 local selectedPlayer = nil
+local selectedName   = nil   -- sticky selection, survives list rebuilds / player leaving
 local connections    = {}
 local renderConn     = nil
-local playerListDirty = true
+local playerListDirty = false
 
 -- ------------------------------------------------------------
 -- Helpers
 -- ------------------------------------------------------------
 
-local function getParent(inst) return inst.Parent end
-
 local function isAlive(inst)
     if not inst then return false end
-    local ok, parent = pcall(getParent, inst)
+    local ok, parent = pcall(function() return inst.Parent end)
     return ok and parent ~= nil
 end
-
-local function clearESPData(player) espState[player] = nil end
 
 local function getState(player)
     local st = espState[player]
@@ -85,10 +81,10 @@ local function getState(player)
 end
 
 local function uiSet(key, value)
-    pcall(function()
-        local setValue = rawget(UI, "SetValue")
-        if type(setValue) == "function" then setValue(key, value) end
-    end)
+    local ok, setValue = pcall(rawget, UI, "SetValue")
+    if ok and type(setValue) == "function" then
+        pcall(setValue, key, value)
+    end
 end
 
 -- ------------------------------------------------------------
@@ -116,12 +112,12 @@ local function loadConfig()
     if not okExists or not exists then return end
     local ok, raw = pcall(function() return readfile(CONFIG_FILE) end)
     if not ok or not raw or raw == "" then return end
-    for line in raw:gmatch("[^\n]+") do
+    for line in raw:gmatch("[^\r\n]+") do   -- \r handled for Windows line endings
         local key, tag, val = line:match("^([^=]+)=([BN]):(.+)$")
-        if key and tag and val and flags[key] ~= nil then
-            if tag == "B" then
+        if key and key ~= "enabled" and flags[key] ~= nil then
+            if tag == "B" and type(flags[key]) == "boolean" then
                 flags[key] = (val == "true")
-            elseif tag == "N" then
+            elseif tag == "N" and type(flags[key]) == "number" then
                 local n = tonumber(val)
                 if n and n == n and n ~= math.huge and n ~= -math.huge then
                     if key == "maxDist" then n = clamp(n, 100, 10000) end
@@ -142,15 +138,22 @@ local function scheduleSave()
 end
 
 -- ------------------------------------------------------------
--- Drawing objects (lines are created lazily, only when first shown)
+-- Drawing objects
 -- ------------------------------------------------------------
+
+local ESP_FONT = Drawing.Fonts.SystemBold
 
 local function newText(size)
     local t = Drawing.new("Text")
-    t.Size = size or 14; t.Center = true; t.Outline = true; t.Visible = false
+    t.Size = size or 14
+    t.Center = true
+    t.Outline = true
+    t.Font = ESP_FONT
+    t.Visible = false
     return t
 end
 
+-- Lines are created lazily the first time they are indexed
 local lineMeta = {
     __index = function(t, key)
         local size = LINE_SIZES[key]
@@ -164,7 +167,7 @@ local lineMeta = {
 local function removeAll(tbl)
     if not tbl then return end
     for _, d in pairs(tbl) do
-        if d and d.Remove then pcall(function() d:Remove() end) end
+        if d and d.Remove then pcall(d.Remove, d) end
     end
 end
 
@@ -196,21 +199,23 @@ local function trackPlayer(player)
     trackedCount = trackedCount + 1
 end
 
+-- NOTE: does NOT touch the selection; the details panel resolves selectedName itself
 local function removeESP(player)
     removeObjects(player)
     if trackedPlayers[player] then
         trackedPlayers[player] = nil
         trackedCount = trackedCount - 1
     end
-    clearESPData(player)
+    espState[player] = nil
 end
 
--- Cleanup hook for re-execution
 env.__MEG_NFC_CLEANUP = function()
     LOOP_STOP = true
-    if renderConn then pcall(function() renderConn:Disconnect() end) end
+    if renderConn then pcall(function() renderConn:Disconnect() end); renderConn = nil end
     for _, c in ipairs(connections) do pcall(function() c:Disconnect() end) end
+    connections = {}
     for p in pairs(espObjects) do removeObjects(p) end
+    espObjects, espState, trackedPlayers, trackedCount = {}, {}, {}, 0
 end
 
 -- ------------------------------------------------------------
@@ -232,7 +237,7 @@ pcall(function()
     end)
 end)
 
--- Slow housekeeping: pick up players that didn't fit earlier, drop stale state, free idle objects
+-- Housekeeping: pick up missed players, drop stale ones, free idle drawings
 task.spawn(function()
     while not LOOP_STOP do
         task.wait(2)
@@ -321,7 +326,7 @@ local function getCharacterBloodline(character, gui, player)
     local first, bloodline = text:match("^(%S+)%s+(.+)$")
     if not bloodline or bloodline == "" then return nil end
 
-    bloodline = bloodline:gsub("%s+$", "")
+    bloodline = bloodline:gsub("%s+$", "")   -- gsub returns 2 values; only the first is kept
     if bloodline == "" then return nil end
     if first and first:lower() == bloodline:lower() then return nil end
     if player and bloodline:lower() == player.Name:lower() then return nil end
@@ -347,10 +352,9 @@ end
 
 local function flagOn(folder, name)
     local f = folder:FindFirstChild(name)
-    return f and f:IsA("BoolValue") and f.Value == true
+    return (f and f:IsA("BoolValue") and f.Value == true) or false
 end
 
--- Watched spells: Ictus, Motus (strings are constants, no per-refresh allocation)
 local function findActiveSpells(casting)
     local ictus = flagOn(casting, "Ictus")
     local motus = flagOn(casting, "Motus")
@@ -361,27 +365,22 @@ local function findActiveSpells(casting)
 end
 
 local function isInvisible(casting)
-    return flagOn(casting, "Invisique") == true
+    return flagOn(casting, "Invisique")
 end
 
 local function isSoulLinked(player)
     local entry = getLivingEntry(player)
     if not entry then return false end
     local sl = entry:FindFirstChild("SoulLink")
-    return sl and sl:IsA("BoolValue") and sl.Value == true
+    return (sl and sl:IsA("BoolValue") and sl.Value == true) or false
 end
 
-local function findSoulPartner(player, linkedList)
-    local linked = linkedList
-    if not linked then
-        linked = {}
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= LocalPlayer and isSoulLinked(p) then linked[#linked+1] = p end
+-- Returns the OTHER soul-linked player (never the local player)
+local function findSoulPartner(player)
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p ~= player and isSoulLinked(p) then
+            return p
         end
-    end
-    if #linked == 2 then
-        if linked[1] == player then return linked[2] end
-        if linked[2] == player then return linked[1] end
     end
     return nil
 end
@@ -390,7 +389,6 @@ end
 -- Rendering
 -- ------------------------------------------------------------
 
--- Visibility/property caches live in our own tables so we never read from Drawing objects.
 local function hideLine(st, obj, key)
     if st.vis[key] then
         local d = rawget(obj, key)
@@ -433,14 +431,12 @@ local function resolveParts(st, player)
         st.dataStamp = nil
         st.casting = getCastingFolder(player)
     end
-    -- Re-find parts if the cached ones were removed from the character
     if not st.hrp or st.hrp.Parent == nil then st.hrp = char:FindFirstChild("HumanoidRootPart") end
     if not st.humanoid or st.humanoid.Parent == nil then st.humanoid = char:FindFirstChildOfClass("Humanoid") end
     return char
 end
 
 local function updateESPData(player, st, char, humanoid, dist, now)
-    -- Distance string: only rebuilt when the integer value changes
     local d = floor(dist)
     if d ~= st.lastDist then
         st.lastDist = d
@@ -450,10 +446,8 @@ local function updateESPData(player, st, char, humanoid, dist, now)
     if st.dataStamp and (now - st.dataStamp) < DATA_REFRESH_INTERVAL then
         return
     end
-    -- Small random jitter spreads players' refreshes across frames (avoids a spike every 0.25s)
-    st.dataStamp = now + math.random() * 0.1
+    st.dataStamp = now + math.random() * 0.1   -- jitter so players don't all refresh on the same frame
 
-    -- Re-resolve gui every 3s (text can change mid-game)
     local gui = st.gui
     local needGui = not (gui and isAlive(gui)) or (st.guiStamp and (now - st.guiStamp) > 3)
     if needGui then
@@ -463,7 +457,6 @@ local function updateESPData(player, st, char, humanoid, dist, now)
         st.casting = getCastingFolder(player)
     end
 
-    -- Species / bloodline: re-parse on gui change or every INFO_REFRESH_INTERVAL seconds
     if gui ~= st.lastGui or not st.infoStamp or (now - st.infoStamp) > INFO_REFRESH_INTERVAL then
         st.infoStamp = now
         st.lastGui = gui
@@ -473,26 +466,16 @@ local function updateESPData(player, st, char, humanoid, dist, now)
 
     local casting = st.casting
     if casting and casting.Parent == nil then
-        casting = nil; st.casting = nil -- folder was replaced/destroyed, re-fetch below
+        casting = nil; st.casting = nil
     end
     if not casting and (flags.spellESP or flags.visESP) then
         casting = getCastingFolder(player)
         st.casting = casting
     end
 
-    if flags.spellESP and casting then
-        st.spellText = findActiveSpells(casting)
-    else
-        st.spellText = nil
-    end
+    st.spellText = (flags.spellESP and casting) and findActiveSpells(casting) or nil
+    st.isInvis   = (flags.visESP and casting) and isInvisible(casting) or false
 
-    if flags.visESP and casting then
-        st.isInvis = isInvisible(casting)
-    else
-        st.isInvis = false
-    end
-
-    -- Health string: only rebuilt when the numbers change
     if humanoid and humanoid.MaxHealth > 0 then
         local hp, mhp = floor(humanoid.Health), floor(humanoid.MaxHealth)
         if hp ~= st.lastHp or mhp ~= st.lastMaxHp then
@@ -506,7 +489,7 @@ local function updateESPData(player, st, char, humanoid, dist, now)
 end
 
 local function showLine(st, obj, key, text, color, x, y)
-    local d = obj[key] -- created lazily by the metatable
+    local d = obj[key]
     if st.col[key] ~= color then d.Color = color; st.col[key] = color end
     if st.txt[key] ~= text  then d.Text  = text;  st.txt[key] = text  end
     local px, py = floor(x + 0.5), floor(y + 0.5)
@@ -539,7 +522,6 @@ local function renderOnePlayer(player, st, camPos, maxDist, now)
         return
     end
 
-    -- Objects are only created once a player is actually in range and on screen
     local obj = espObjects[player] or createObjects(player)
 
     st.hidden = false
@@ -554,31 +536,31 @@ local function renderOnePlayer(player, st, camPos, maxDist, now)
     local off = 0
 
     if flags.species and st.speciesText then
-        showLine(st, obj, "species", st.speciesText, COLORS.species, x, baseY + off); off += 15
+        showLine(st, obj, "species", st.speciesText, COLORS.species, x, baseY + off); off += 16
     else hideLine(st, obj, "species") end
 
     if flags.name then
-        showLine(st, obj, "name", player.Name, COLORS.name, x, baseY + off); off += 16
+        showLine(st, obj, "name", player.Name, COLORS.name, x, baseY + off); off += 17
     else hideLine(st, obj, "name") end
 
     if flags.bloodline and st.bloodline then
-        showLine(st, obj, "bloodline", st.bloodline, COLORS.bloodline, x, baseY + off); off += 15
+        showLine(st, obj, "bloodline", st.bloodline, COLORS.bloodline, x, baseY + off); off += 16
     else hideLine(st, obj, "bloodline") end
 
     if flags.spellESP and st.spellText then
-        showLine(st, obj, "spell", st.spellText, COLORS.spell, x, baseY + off); off += 15
+        showLine(st, obj, "spell", st.spellText, COLORS.spell, x, baseY + off); off += 16
     else hideLine(st, obj, "spell") end
 
     if flags.visESP and st.isInvis then
-        showLine(st, obj, "visible", "Invisible", COLORS.invisible, x, baseY + off); off += 15
+        showLine(st, obj, "visible", "Invisible", COLORS.invisible, x, baseY + off); off += 16
     else hideLine(st, obj, "visible") end
 
     if flags.health and st.hpText then
-        showLine(st, obj, "health", st.hpText, COLORS.health, x, baseY + off); off += 15
+        showLine(st, obj, "health", st.hpText, COLORS.health, x, baseY + off); off += 16
     else hideLine(st, obj, "health") end
 
     if flags.distance and st.distText then
-        showLine(st, obj, "dist", st.distText, COLORS.distance, x, baseY + off); off += 15
+        showLine(st, obj, "dist", st.distText, COLORS.distance, x, baseY + off); off += 16
     else hideLine(st, obj, "dist") end
 end
 
@@ -602,7 +584,6 @@ local function renderLoop()
     local maxDist = flags.maxDist
 
     for player in pairs(trackedPlayers) do
-        -- Per-player pcall: one bad character can't break everyone else this frame
         pcall(renderOnePlayer, player, getState(player), camPos, maxDist, now)
     end
 end
@@ -638,7 +619,7 @@ end
 safeAddTab("^.^meg nfc", function(tab)
     local esp = tab:Section("ESP", "Left")
 
-    esp:Toggle("nf_enabled", "Enable ESP", false, function(on) flags.enabled = on; scheduleSave() end)
+    esp:Toggle("nf_enabled", "Enable ESP", false, function(on) flags.enabled = on end)
     esp:Toggle("nf_species", "Species", flags.species, function(on) flags.species = on; scheduleSave() end)
     esp:Toggle("nf_name", "Username", flags.name, function(on) flags.name = on; scheduleSave() end)
     esp:Toggle("nf_bloodline", "Bloodline", flags.bloodline, function(on) flags.bloodline = on; scheduleSave() end)
@@ -650,33 +631,11 @@ safeAddTab("^.^meg nfc", function(tab)
     esp:Tip("Shows 'Invisible' in red only for players using Invisique")
     esp:SliderInt("nf_maxdist", "Max Distance", 100, 10000, flags.maxDist, function(v) flags.maxDist = v; scheduleSave() end)
 
-    local actions = tab:Section("Actions", "Left")
-    actions:Button("Reset Defaults", function()
-        flags.name = true; flags.bloodline = true; flags.species = true
-        flags.health = true; flags.distance = true
-        flags.spellESP = true; flags.visESP = true; flags.maxDist = 2000
-
-        -- Push values back into the UI so it doesn't desync from flags
-        local keys = {
-            name = "nf_name", bloodline = "nf_bloodline", species = "nf_species",
-            health = "nf_health", distance = "nf_distance", spellESP = "nf_spell",
-            visESP = "nf_vis", maxDist = "nf_maxdist",
-        }
-        for flag, id in pairs(keys) do uiSet(id, flags[flag]) end
-
-        for _, st in pairs(espState) do resetCaches(st) end
-        for _, obj in pairs(espObjects) do
-            for _, d in pairs(obj) do d.Visible = false end
-        end
-        scheduleSave()
-        notify("Config reset to defaults", "^.^meg nfc", 3)
-    end)
-    actions:Button("Save Now", function()
-        saveConfig()
-        notify("Config saved", "^.^meg nfc", 2)
-    end)
-
     local info = tab:Section("Select Player", "Left")
+
+    local function entryUsername(entry)
+        return entry and entry:match("%(([^%(%)]+)%)%s*$") or nil
+    end
 
     local function buildPlayerList()
         local list = {}
@@ -687,27 +646,38 @@ safeAddTab("^.^meg nfc", function(tab)
             end
         end
         table.sort(list)
+        if #list == 0 then list[1] = "(no other players)" end
         return list
     end
 
     local function findPlayerByEntry(entry)
-        if not entry then return nil end
-        local username = entry:match("%(([^%(%)]+)%)%s*$")
+        local username = entryUsername(entry)
         if not username then return nil end
         for _, p in ipairs(Players:GetPlayers()) do
-            if p.Name == username then return p end
+            if p.Name == username and p ~= LocalPlayer then return p end
         end
         return nil
     end
 
+    local function selectPlayer(p)
+        selectedPlayer = p
+        selectedName = p and p.Name or nil
+    end
+
+    local rebuilding = false   -- ignore callbacks fired by our own list rebuild
+
     local playerList = buildPlayerList()
-    if #playerList == 0 then playerList = { "(no other players)" } end
+    local lastListKey = table.concat(playerList, "\0")
 
     local dropdown = info:Combo(
         "nf_selected_player", "Player", playerList, 0,
-        function(idx, entry) selectedPlayer = findPlayerByEntry(entry) end
+        function(idx, entry)
+            if rebuilding then return end
+            local p = findPlayerByEntry(entry)
+            if p then selectPlayer(p) end     -- ignore nil / placeholder entries
+        end
     )
-    selectedPlayer = findPlayerByEntry(playerList[1])
+    selectPlayer(findPlayerByEntry(playerList[1]))
 
     local details = tab:Section("Details", "Right")
     details:InputText("nf_det_user",      "Username",   "-")
@@ -716,84 +686,94 @@ safeAddTab("^.^meg nfc", function(tab)
     details:InputText("nf_det_health",    "Health",     "-")
     details:InputText("nf_det_soul",      "Soul Link",  "-")
 
-    -- Player list: only rebuilt when PlayerAdded/PlayerRemoving flagged a change
-    local lastListKey = ""
+    local function refreshDropdown()
+        local newList = buildPlayerList()
+        local listKey = table.concat(newList, "\0")
+        if listKey == lastListKey then return end
+        lastListKey = listKey
+
+        -- find the current selection in the new list
+        local newIndex = nil
+        if selectedName then
+            for i, entry in ipairs(newList) do
+                if entryUsername(entry) == selectedName then
+                    newIndex = i - 1
+                    break
+                end
+            end
+        end
+
+        -- selected player left (or nothing selected): fall back to the first entry
+        if not newIndex then
+            newIndex = 0
+            selectPlayer(findPlayerByEntry(newList[1]))
+        end
+
+        rebuilding = true
+        pcall(function()
+            dropdown:Clear()
+            for _, name in ipairs(newList) do dropdown:Add(name) end
+            dropdown:SetValue(newIndex)
+        end)
+        rebuilding = false
+    end
+
     task.spawn(function()
         while not LOOP_STOP do
             task.wait(1)
             if playerListDirty then
                 playerListDirty = false
-                local newList = buildPlayerList()
-                if #newList == 0 then newList = { "(no other players)" } end
-                local listKey = table.concat(newList, "\0")
-                if listKey ~= lastListKey then
-                    lastListKey = listKey
-                    local newIndex = 0
-                    if selectedPlayer then
-                        for i, entry in ipairs(newList) do
-                            if findPlayerByEntry(entry) == selectedPlayer then
-                                newIndex = i - 1; break
-                            end
-                        end
-                    end
-                    pcall(function()
-                        dropdown:Clear()
-                        for _, name in ipairs(newList) do dropdown:Add(name) end
-                        dropdown:SetValue(newIndex)
-                    end)
-                    if not selectedPlayer then selectedPlayer = findPlayerByEntry(newList[1]) end
-                end
+                local ok, err = pcall(refreshDropdown)
+                if not ok then print(">>> dropdown refresh error: " .. tostring(err)) end
             end
         end
     end)
 
-    local lastDetails = {}
-    local function setDetail(key, value)
-        if lastDetails[key] ~= value then
-            lastDetails[key] = value
-            uiSet(key, value)
+    -- Always push values (no cache) so a UI reset can never leave the boxes blank
+    local function clearDetails()
+        uiSet("nf_det_user", "-")
+        uiSet("nf_det_species", "-")
+        uiSet("nf_det_bloodline", "-")
+        uiSet("nf_det_health", "-")
+        uiSet("nf_det_soul", "-")
+    end
+
+    local function updateDetails()
+        local sel = selectedName and Players:FindFirstChild(selectedName)
+        if not (sel and sel:IsA("Player")) then clearDetails() return end
+        selectedPlayer = sel
+
+        local char = sel.Character
+        local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+        local gui = char and getTitlesGui(char)
+
+        uiSet("nf_det_user", (sel.DisplayName or sel.Name) .. " (" .. sel.Name .. ")")
+        uiSet("nf_det_species", (char and getSpeciesText(char, gui)) or "?")
+        uiSet("nf_det_bloodline", (char and getCharacterBloodline(char, gui, sel)) or "?")
+
+        local hpStr = "?"
+        if humanoid and humanoid.MaxHealth > 0 then
+            hpStr = floor(humanoid.Health) .. " / " .. floor(humanoid.MaxHealth)
+        end
+        uiSet("nf_det_health", hpStr)
+
+        if isSoulLinked(sel) then
+            local partner = findSoulPartner(sel)
+            if partner then
+                uiSet("nf_det_soul", (partner.DisplayName or partner.Name) .. " (" .. partner.Name .. ")")
+            else
+                uiSet("nf_det_soul", "Yes")
+            end
+        else
+            uiSet("nf_det_soul", "-")
         end
     end
 
     task.spawn(function()
         while not LOOP_STOP do
             task.wait(0.5)
-            local sel = selectedPlayer
-            if not sel then
-                setDetail("nf_det_user", "-")
-                setDetail("nf_det_species", "-")
-                setDetail("nf_det_bloodline", "-")
-                setDetail("nf_det_health", "-")
-                setDetail("nf_det_soul", "-")
-            else
-                local char = sel.Character
-                local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-                local gui = char and getTitlesGui(char)
-                local dn = sel.DisplayName or sel.Name
-                setDetail("nf_det_user", dn .. " (" .. sel.Name .. ")")
-                setDetail("nf_det_species", (char and getSpeciesText(char, gui)) or "?")
-                setDetail("nf_det_bloodline", (char and getCharacterBloodline(char, gui, sel)) or "?")
-                local hpStr = "?"
-                if humanoid and humanoid.MaxHealth > 0 then
-                    hpStr = floor(humanoid.Health) .. " / " .. floor(humanoid.MaxHealth)
-                end
-                setDetail("nf_det_health", hpStr)
-                if isSoulLinked(sel) then
-                    local linked = {}
-                    for _, p in ipairs(Players:GetPlayers()) do
-                        if p ~= LocalPlayer and isSoulLinked(p) then linked[#linked+1] = p end
-                    end
-                    local partner = findSoulPartner(sel, linked)
-                    if partner then
-                        local pdn = partner.DisplayName or partner.Name
-                        setDetail("nf_det_soul", pdn .. " (" .. partner.Name .. ")")
-                    else
-                        setDetail("nf_det_soul", "Yes")
-                    end
-                else
-                    setDetail("nf_det_soul", "-")
-                end
-            end
+            local ok, err = pcall(updateDetails)
+            if not ok then print(">>> details loop error: " .. tostring(err)) end
         end
     end)
 end)
