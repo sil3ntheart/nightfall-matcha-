@@ -25,12 +25,12 @@ local LINE_SIZES = {
 }
 
 local MAX_TRACKED          = 50
-local OBJECT_IDLE_TIMEOUT  = 120     -- keep Drawing objects around longer (creating them is expensive)
-local DATA_INTERVAL        = 0.12    -- per-player data refresh (staggered, NOT synced)
-local HIDDEN_INTERVAL      = 0.5     -- off-screen / far players refresh slowly
-local MAX_REFRESH_PER_FRAME = 4      -- budget: max players whose data is re-read in one frame
-local GUI_RETRY_INTERVAL   = 1.0     -- if TitlesGui/CastingSpells missing, only retry once per second
-local TITLE_REREAD_INTERVAL = 1.0    -- re-read species/bloodline text this often
+local OBJECT_IDLE_TIMEOUT  = 120
+local DATA_INTERVAL        = 0.12
+local HIDDEN_INTERVAL      = 0.5
+local MAX_REFRESH_PER_FRAME = 4
+local GUI_RETRY_INTERVAL   = 1.0
+local TITLE_REREAD_INTERVAL = 1.0
 local UI_REFRESH_INTERVAL  = 1.5
 
 -- Services & Globals
@@ -205,7 +205,10 @@ local function removeObjects(player)
     removeAll(espObjects[player])
     espObjects[player] = nil
     local st = espState[player]
-    if st then resetCaches(st); st.hidden = true end
+    if st then
+        resetCaches(st)
+        st.hidden = true
+    end
 end
 
 local function trackPlayer(player)
@@ -391,28 +394,43 @@ end
 -- Rendering
 -- ------------------------------------------------------------
 
-local function hideLine(st, obj, key)
-    if st.vis[key] then
-        local d = rawget(obj, key)
-        if d then d.Visible = false end
-        st.vis[key] = false
-    end
-end
-
+-- hideAll now hides EVERY drawing object unconditionally and
+-- resyncs st.vis to false. This is the core fix: never trust
+-- st.vis alone, always force the real Visible=false.
 local function hideAll(st, obj)
     for key, d in pairs(obj) do
-        if st.vis[key] then
-            d.Visible = false
-            st.vis[key] = false
-        end
+        if d then pcall(function() d.Visible = false end) end
     end
+    -- wipe cache so the next show always re-applies position/color/text
+    st.vis = {}
+    st.px = {}; st.py = {}
+    st.col = {}; st.txt = {}
 end
 
+local function hideLine(st, obj, key)
+    local d = rawget(obj, key)
+    if d and d.Visible then d.Visible = false end
+    st.vis[key] = false
+end
+
+-- Always hide, no short-circuit. Cheap and idempotent.
 local function hidePlayer(player, st)
-    if st.hidden then return end
     local obj = espObjects[player]
     if obj then hideAll(st, obj) end
     st.hidden = true
+end
+
+-- Force-hide every player's objects. Used when disabled / cleanup.
+local function hideAllPlayers()
+    for player, obj in pairs(espObjects) do
+        local st = espState[player]
+        if st then
+            hideAll(st, obj)
+            st.hidden = true
+        else
+            removeAll(obj)
+        end
+    end
 end
 
 -- Reads position safely (instance may be destroyed mid-frame)
@@ -427,6 +445,7 @@ local function refreshData(player, st, now)
         st.char = char
         st.hrp, st.humanoid, st.gui, st.casting, st.lastGui = nil, nil, nil, nil, nil
         st.speciesText, st.bloodline, st.spellText, st.hpText = nil, nil, nil, nil
+        st.distText = nil
         st.isInvis = false
         st.lastHp, st.lastMaxHp = nil, nil
         st.guiRetry, st.castRetry, st.nextTitle = 0, 0, 0
@@ -561,22 +580,17 @@ local function drawPlayer(player, st, x, sy, dist, now)
 end
 
 local candidates = {}
+local drawnThisFrame = {}   -- players we successfully drew this frame
 
 local function renderLoop()
     if not flags.enabled then
-        for player, obj in pairs(espObjects) do
-            local st = espState[player]
-            if st and not st.hidden then
-                hideAll(st, obj)
-                st.hidden = true
-            end
-        end
+        hideAllPlayers()
         return
     end
 
     if not Camera or not Camera.Parent then
         Camera = workspace.CurrentCamera
-        if not Camera then return end
+        if not Camera then hideAllPlayers(); return end
     end
 
     local now     = tick()
@@ -585,6 +599,9 @@ local function renderLoop()
     local maxDist = flags.maxDist
     local budget  = MAX_REFRESH_PER_FRAME
     local n = 0
+
+    -- reset the per-frame drawn set
+    for k in pairs(drawnThisFrame) do drawnThisFrame[k] = nil end
 
     -- Pass 1: cheap visibility test. Only ONE property read per player per frame (hrp.Position).
     for player in pairs(trackedPlayers) do
@@ -605,8 +622,8 @@ local function renderLoop()
                 local dist = sqrt(dx*dx + dy*dy + dz*dz)
                 st.dist = dist
                 if dist <= maxDist then
-                    local sp, onScreen = WorldToScreen(pos)
-                    if onScreen then
+                    local sok, sp, onScreen = pcall(WorldToScreen, pos)
+                    if sok and onScreen and sp then
                         visible = true
                         n = n + 1
                         local c = candidates[n]
@@ -625,7 +642,30 @@ local function renderLoop()
     -- Pass 2: draw everyone who is on screen and in range
     for i = 1, n do
         local c = candidates[i]
-        drawPlayer(c.player, c.st, c.sx, c.sy, c.dist, now)
+        local ok = pcall(drawPlayer, c.player, c.st, c.sx, c.sy, c.dist, now)
+        if ok then
+            drawnThisFrame[c.player] = true
+        else
+            -- drawPlayer errored mid-way: force-hide so nothing is left visible
+            hidePlayer(c.player, c.st)
+        end
+    end
+
+    -- Pass 3: ORPHAN SWEEP. Any player in espObjects that we did NOT
+    -- draw this frame gets force-hidden. This catches players removed
+    -- from trackedPlayers, players whose data went stale, and any
+    -- object whose st.hidden flag drifted from the real Visible.
+    for player in pairs(espObjects) do
+        if not drawnThisFrame[player] then
+            local st = espState[player]
+            if st then
+                local obj = espObjects[player]
+                if obj then hideAll(st, obj) end
+                st.hidden = true
+            else
+                removeAll(espObjects[player])
+            end
+        end
     end
 end
 
@@ -651,9 +691,11 @@ env.__MEG_NFC_CLEANUP = function()
     STOPPED = true
     LOOP_STOP = true
     flags.enabled = false
+    hideAllPlayers()
     disconnectAll()
     for p in pairs(espObjects) do removeObjects(p) end
     espObjects, espState, trackedPlayers, trackedCount = {}, {}, {}, 0
+    for k in pairs(drawnThisFrame) do drawnThisFrame[k] = nil end
 end
 
 -- ------------------------------------------------------------
