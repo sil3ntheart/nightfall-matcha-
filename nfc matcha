@@ -10,9 +10,10 @@ local LOOP_STOP = false
 
 -- Constants
 local COLORS = {
-    species    = Color3.fromRGB(200, 160, 255),
+    species    = Color3.fromRGB(200, 160, 255),  -- purple
     name       = Color3.fromRGB(255, 255, 255),
-    bloodline  = Color3.fromRGB(80, 160, 255),
+    bloodline  = Color3.fromRGB(80, 160, 255),   -- blue
+    pipe       = Color3.fromRGB(255, 255, 255),  -- white separator
     spell      = Color3.fromRGB(255, 140, 0),
     invisible  = Color3.fromRGB(255, 80, 80),
     health     = Color3.fromRGB(80, 255, 80),
@@ -22,16 +23,21 @@ local COLORS = {
 local LINE_SIZES = {
     species = 13, name = 14, bloodline = 13, spell = 13,
     visible = 13, health = 13, dist = 12,
+    pipe = 13,
 }
 
-local MAX_TRACKED          = 50
-local OBJECT_IDLE_TIMEOUT  = 120
-local DATA_INTERVAL        = 0.12
-local HIDDEN_INTERVAL      = 0.5
+local MAX_TRACKED           = 50
+local OBJECT_IDLE_TIMEOUT   = 120
+local DATA_INTERVAL         = 0.12
+local HIDDEN_INTERVAL       = 0.5
 local MAX_REFRESH_PER_FRAME = 4
-local GUI_RETRY_INTERVAL   = 1.0
+local GUI_RETRY_INTERVAL    = 1.0
 local TITLE_REREAD_INTERVAL = 1.0
-local UI_REFRESH_INTERVAL  = 1.5
+local UI_REFRESH_INTERVAL   = 1.5
+
+-- TEXT SPACING CONFIG
+local WIDTH_FACTOR          = 0.52  -- Slightly tighter text estimate
+local PIPE_SPACING          = 0     -- 0 = no spaces, 1 = slight gap
 
 -- Services & Globals
 local Players     = game:GetService("Players")
@@ -90,6 +96,7 @@ local function getState(player)
             px = {}, py = {}, col = {}, txt = {}, vis = {},
             lastSeen = tick(),
             nextData = 0, guiRetry = 0, castRetry = 0, nextTitle = 0,
+            lastDist = nil,
         }
         espState[player] = st
     end
@@ -394,14 +401,10 @@ end
 -- Rendering
 -- ------------------------------------------------------------
 
--- hideAll now hides EVERY drawing object unconditionally and
--- resyncs st.vis to false. This is the core fix: never trust
--- st.vis alone, always force the real Visible=false.
 local function hideAll(st, obj)
     for key, d in pairs(obj) do
         if d then pcall(function() d.Visible = false end) end
     end
-    -- wipe cache so the next show always re-applies position/color/text
     st.vis = {}
     st.px = {}; st.py = {}
     st.col = {}; st.txt = {}
@@ -413,14 +416,12 @@ local function hideLine(st, obj, key)
     st.vis[key] = false
 end
 
--- Always hide, no short-circuit. Cheap and idempotent.
 local function hidePlayer(player, st)
     local obj = espObjects[player]
     if obj then hideAll(st, obj) end
     st.hidden = true
 end
 
--- Force-hide every player's objects. Used when disabled / cleanup.
 local function hideAllPlayers()
     for player, obj in pairs(espObjects) do
         local st = espState[player]
@@ -433,11 +434,8 @@ local function hideAllPlayers()
     end
 end
 
--- Reads position safely (instance may be destroyed mid-frame)
 local function readPos(part) return part.Position end
 
--- All the SLOW instance reads live here. Runs staggered per player,
--- never for every player in the same frame.
 local function refreshData(player, st, now)
     local char = player.Character
 
@@ -446,6 +444,7 @@ local function refreshData(player, st, now)
         st.hrp, st.humanoid, st.gui, st.casting, st.lastGui = nil, nil, nil, nil, nil
         st.speciesText, st.bloodline, st.spellText, st.hpText = nil, nil, nil, nil
         st.distText = nil
+        st.lastDist = nil
         st.isInvis = false
         st.lastHp, st.lastMaxHp = nil, nil
         st.guiRetry, st.castRetry, st.nextTitle = 0, 0, 0
@@ -469,13 +468,6 @@ local function refreshData(player, st, now)
     local health, maxHealth = humanoid.Health, humanoid.MaxHealth
     st.alive = health > 0
     if not st.alive then return end
-
-    -- distance text (updated at data rate, not every frame -> far fewer Text writes)
-    local d = floor(st.dist or 0)
-    if d ~= st.lastDist then
-        st.lastDist = d
-        st.distText = tostring(d)
-    end
 
     -- health
     if maxHealth > 0 then
@@ -506,7 +498,7 @@ local function refreshData(player, st, now)
         st.spellText, st.isInvis = nil, false
     end
 
-    -- species / bloodline (re-read ~1x/sec so text changes are still picked up)
+    -- species / bloodline (re-read ~1x/sec)
     if flags.species or flags.bloodline then
         local gui = st.gui
         if not (gui and gui.Parent) then
@@ -539,28 +531,89 @@ local function showLine(st, obj, key, text, color, x, y)
     if not st.vis[key] then d.Visible = true; st.vis[key] = true end
 end
 
+local function estTextWidth(text, size)
+    return (#text) * size * WIDTH_FACTOR
+end
+
+-- Draws up to three colored text segments on one row, group centered on cx
+local function showTriple(st, obj, keyA, textA, colorA,
+                                   keyB, textB, colorB,
+                                   keyC, textC, colorC,
+                                   cx, y)
+    local hasA = textA and textA ~= ""
+    local hasB = textB and textB ~= ""
+    local hasC = textC and textC ~= ""
+
+    if not hasA then hideLine(st, obj, keyA) end
+    if not hasB then hideLine(st, obj, keyB) end
+    if not hasC then hideLine(st, obj, keyC) end
+    if not (hasA or hasB or hasC) then return 0 end
+
+    local wA = hasA and estTextWidth(textA, LINE_SIZES[keyA]) or 0
+    local wB = hasB and estTextWidth(textB, LINE_SIZES[keyB]) or 0
+    local wC = hasC and estTextWidth(textC, LINE_SIZES[keyC]) or 0
+    
+    local gap = PIPE_SPACING
+    local totalW = wA + (hasA and hasB and gap or 0)
+                 + wB + (hasB and hasC and gap or 0)
+                 + wC
+
+    local cursor = cx - totalW * 0.5
+
+    if hasA then
+        showLine(st, obj, keyA, textA, colorA, cursor + wA * 0.5, y)
+        cursor = cursor + wA
+        if hasB or hasC then cursor = cursor + gap end
+    end
+    if hasB then
+        showLine(st, obj, keyB, textB, colorB, cursor + (wB * 0.5) - 1, y)
+        cursor = cursor + wB
+        if hasC then cursor = cursor + gap end
+    end
+    if hasC then
+        showLine(st, obj, keyC, textC, colorC, cursor + wC * 0.5, y)
+    end
+
+    return totalW
+end
+
 local function drawPlayer(player, st, x, sy, dist, now)
     local obj = espObjects[player] or createObjects(player)
 
     st.hidden = false
     st.lastSeen = now
-    if not st.distText then st.distText = tostring(floor(dist)) end
 
     local boxHeight = floor((clamp(1500 / max(dist, 1), 20, 250)) / 4) * 4
     local baseY = sy - boxHeight * 0.5 - 18
     local off = 0
 
-    if flags.species and st.speciesText then
-        showLine(st, obj, "species", st.speciesText, COLORS.species, x, baseY + off); off += 16
-    else hideLine(st, obj, "species") end
+    -- Species | Bloodline on one row
+    local sp = flags.species   and st.speciesText or nil
+    local bl = flags.bloodline and st.bloodline   or nil
+    
+    -- Check if they are actually visible (not just non-nil, but not empty string)
+    local hasSp = sp and sp ~= ""
+    local hasBl = bl and bl ~= ""
+
+    if hasSp or hasBl then
+        -- Only draw the pipe if BOTH species and bloodline are active
+        local pipeText = (hasSp and hasBl) and "|" or nil
+        
+        showTriple(st, obj,
+            "species",   sp,   COLORS.species,
+            "pipe",      pipeText, COLORS.pipe,
+            "bloodline", bl,   COLORS.bloodline,
+            x, baseY + off)
+        off += 16
+    else
+        hideLine(st, obj, "species")
+        hideLine(st, obj, "pipe")
+        hideLine(st, obj, "bloodline")
+    end
 
     if flags.name then
         showLine(st, obj, "name", player.Name, COLORS.name, x, baseY + off); off += 17
     else hideLine(st, obj, "name") end
-
-    if flags.bloodline and st.bloodline then
-        showLine(st, obj, "bloodline", st.bloodline, COLORS.bloodline, x, baseY + off); off += 16
-    else hideLine(st, obj, "bloodline") end
 
     if flags.spellESP and st.spellText then
         showLine(st, obj, "spell", st.spellText, COLORS.spell, x, baseY + off); off += 16
@@ -574,13 +627,21 @@ local function drawPlayer(player, st, x, sy, dist, now)
         showLine(st, obj, "health", st.hpText, COLORS.health, x, baseY + off); off += 16
     else hideLine(st, obj, "health") end
 
-    if flags.distance and st.distText then
+    -- Distance text
+    if flags.distance then
+        local dInt = floor(dist + 0.5)
+        if st.lastDist ~= dInt then
+            st.lastDist = dInt
+            st.distText = tostring(dInt)
+        end
         showLine(st, obj, "dist", st.distText, COLORS.distance, x, baseY + off); off += 16
-    else hideLine(st, obj, "dist") end
+    else
+        hideLine(st, obj, "dist")
+    end
 end
 
 local candidates = {}
-local drawnThisFrame = {}   -- players we successfully drew this frame
+local drawnThisFrame = {}
 
 local function renderLoop()
     if not flags.enabled then
@@ -600,10 +661,8 @@ local function renderLoop()
     local budget  = MAX_REFRESH_PER_FRAME
     local n = 0
 
-    -- reset the per-frame drawn set
     for k in pairs(drawnThisFrame) do drawnThisFrame[k] = nil end
 
-    -- Pass 1: cheap visibility test. Only ONE property read per player per frame (hrp.Position).
     for player in pairs(trackedPlayers) do
         local st = espState[player] or getState(player)
 
@@ -639,22 +698,16 @@ local function renderLoop()
 
     for i = #candidates, n + 1, -1 do candidates[i] = nil end
 
-    -- Pass 2: draw everyone who is on screen and in range
     for i = 1, n do
         local c = candidates[i]
         local ok = pcall(drawPlayer, c.player, c.st, c.sx, c.sy, c.dist, now)
         if ok then
             drawnThisFrame[c.player] = true
         else
-            -- drawPlayer errored mid-way: force-hide so nothing is left visible
             hidePlayer(c.player, c.st)
         end
     end
 
-    -- Pass 3: ORPHAN SWEEP. Any player in espObjects that we did NOT
-    -- draw this frame gets force-hidden. This catches players removed
-    -- from trackedPlayers, players whose data went stale, and any
-    -- object whose st.hidden flag drifted from the real Visible.
     for player in pairs(espObjects) do
         if not drawnThisFrame[player] then
             local st = espState[player]
@@ -775,7 +828,6 @@ local function updateDetails()
     end
 end
 
--- Player list rebuild loop
 task.spawn(function()
     while not LOOP_STOP do
         task.wait(1)
